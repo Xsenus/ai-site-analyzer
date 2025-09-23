@@ -19,7 +19,7 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY") or (settings.OPENAI_API_KEY or
 
 # Модель эмбеддингов: поддерживаем оба имени переменных окружения и значение из Settings
 _EMBED_MODEL_ENV = os.getenv("EMBED_MODEL") or os.getenv("OPENAI_EMBED_MODEL")
-OPENAI_EMBED_MODEL: str = _EMBED_MODEL_ENV or settings.embed_model or "text-embedding-3-small"
+OPENAI_EMBED_MODEL: str = _EMBED_MODEL_ENV or settings.embed_model or "text-embedding-3-large"
 
 # Размерность вектора (для валидации при желании)
 VECTOR_DIM: int = int(os.getenv("VECTOR_DIM") or settings.VECTOR_DIM or 3072)
