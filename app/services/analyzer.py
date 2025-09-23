@@ -1,17 +1,22 @@
+# app/services/analyzer.py
 from __future__ import annotations
+
+import math
 import re
-from typing import Any, Dict, List, Tuple, Optional
-import numpy as np
+from typing import Any, Dict, List, Optional
+
 from openai import AsyncOpenAI
+
 from app.config import settings
 from app.models.ib_prodclass import IB_PRODCLASS
 
+# Клиент OpenAI (async)
 oai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 # --- настройки сопоставления ---
-MATCH_THRESHOLD_EQUIPMENT = 0.45
-MATCH_THRESHOLD_GOODS     = 0.45
-EMBED_BATCH_SIZE          = 96
+MATCH_THRESHOLD_EQUIPMENT: float = 0.45
+MATCH_THRESHOLD_GOODS: float = 0.45
+EMBED_BATCH_SIZE: int = 96
 
 
 # ---------- prompt & openai ----------
@@ -63,18 +68,37 @@ async def call_openai(prompt: str, chat_model: str) -> str:
 # ---------- embeddings & math ----------
 
 async def _embeddings(texts: List[str], embed_model: str) -> List[List[float]]:
+    """
+    Получить эмбеддинги для списка текстов батчами.
+    """
     all_vecs: List[List[float]] = []
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
-        chunk = texts[i:i + EMBED_BATCH_SIZE]
+        chunk = texts[i : i + EMBED_BATCH_SIZE]
         resp = await oai.embeddings.create(model=embed_model, input=chunk)
-        all_vecs.extend([d.embedding for d in resp.data])
+        all_vecs.extend([list(map(float, d.embedding)) for d in resp.data])
     return all_vecs
 
 
-def _cosine_matrix(A: np.ndarray, B: np.ndarray) -> np.ndarray:
-    A_norm = A / (np.linalg.norm(A, axis=1, keepdims=True) + 1e-9)
-    B_norm = B / (np.linalg.norm(B, axis=1, keepdims=True) + 1e-9)
-    return A_norm @ B_norm.T
+def _cosine_lists(u: List[float], v: List[float]) -> float:
+    """
+    Косинусная близость двух векторов без numpy.
+    Если длины различаются, считаем по минимальной общей длине.
+    """
+    m = min(len(u), len(v))
+    if m == 0:
+        return 0.0
+    dot = 0.0
+    nu = 0.0
+    nv = 0.0
+    for i in range(m):
+        a = u[i]
+        b = v[i]
+        dot += a * b
+        nu += a * a
+        nv += b * b
+    if nu <= 0.0 or nv <= 0.0:
+        return 0.0
+    return dot / (math.sqrt(nu) * math.sqrt(nv))
 
 
 def _to_vec_str(vec: List[float]) -> str:
@@ -89,18 +113,25 @@ def _parse_pgvector_text(s: str) -> Optional[List[float]]:
     if not s:
         return None
     s = s.strip()
-    if (s[0], s[-1]) in {('(', ')'), ('[', ']')}:
+    if not s:
+        return None
+    if (s[0], s[-1]) in {("(", ")"), ("[", "]")}:
         s = s[1:-1]
     try:
         parts = s.split(",")
-        return [float(p) for p in parts if p.strip() != ""]
+        out: List[float] = []
+        for p in parts:
+            p = p.strip()
+            if p:
+                out.append(float(p))
+        return out if out else None
     except Exception:
         return None
 
 
 # ---------- parse model reply ----------
 
-def _extract_section(tag: str, text: str, required: bool = True) -> str | None:
+def _extract_section(tag: str, text: str, required: bool = True) -> Optional[str]:
     m = re.search(rf"\[{re.escape(tag)}\]\s*=\s*\[(.*?)\]", text, flags=re.IGNORECASE | re.DOTALL)
     if not m:
         if required:
@@ -109,7 +140,7 @@ def _extract_section(tag: str, text: str, required: bool = True) -> str | None:
     return m.group(1).strip()
 
 
-def _split(s: str) -> list[str]:
+def _split(s: str) -> List[str]:
     return [p.strip() for p in s.split(";") if p.strip()]
 
 
@@ -120,7 +151,7 @@ def _parse_prodclass_id(s: str) -> int:
     return int(m.group(0))
 
 
-def _parse_score(s: str | None) -> float | None:
+def _parse_score(s: Optional[str]) -> Optional[float]:
     if not s:
         return None
     s_norm = s.replace(",", ".")
@@ -134,14 +165,14 @@ def _parse_score(s: str | None) -> float | None:
     return float(f"{val:.2f}")
 
 
-async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_model: str) -> dict:
+async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_model: str) -> Dict[str, Any]:
     data: Dict[str, Any] = {}
-    data["DESCRIPTION"]         = _extract_section("DESCRIPTION", answer, required=True)
-    data["PRODCLASS_RAW"]       = _extract_section("PRODCLASS", answer, required=True)
+    data["DESCRIPTION"] = _extract_section("DESCRIPTION", answer, required=True) or ""
+    data["PRODCLASS_RAW"] = _extract_section("PRODCLASS", answer, required=True) or ""
     data["PRODCLASS_SCORE_RAW"] = _extract_section("PRODCLASS_SCORE", answer, required=False)
-    data["EQUIPMENT_RAW"]       = _extract_section("EQUIPMENT_SITE", answer, required=True)
-    data["GOODS_RAW"]           = _extract_section("GOODS", answer, required=True)
-    data["GOODS_TYPE_RAW"]      = _extract_section("GOODS_TYPE", answer, required=True)
+    data["EQUIPMENT_RAW"] = _extract_section("EQUIPMENT_SITE", answer, required=True) or ""
+    data["GOODS_RAW"] = _extract_section("GOODS", answer, required=True) or ""
+    data["GOODS_TYPE_RAW"] = _extract_section("GOODS_TYPE", answer, required=True) or ""
 
     data["PRODCLASS"] = _parse_prodclass_id(data["PRODCLASS_RAW"])
     score = _parse_score(data["PRODCLASS_SCORE_RAW"])
@@ -149,9 +180,10 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
     used_fallback = False
     if score is None:
         cls_name = IB_PRODCLASS.get(data["PRODCLASS"], f"Класс {data['PRODCLASS']}")
-        v = await _embeddings([text_par_for_fallback[:6000], cls_name], embed_model)
-        v1, v2 = np.array(v[0], dtype=np.float32), np.array(v[1], dtype=np.float32)
-        sim = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-9))
+        # ограничим длину текста, чтобы не уходить в слишком большие запросы
+        vecs = await _embeddings([text_par_for_fallback[:6000], cls_name], embed_model)
+        v1, v2 = vecs[0], vecs[1]
+        sim = _cosine_lists(v1, v2)
         score = float(f"{(sim + 1.0) / 2.0:.2f}")
         used_fallback = True
 
@@ -167,10 +199,10 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
 
 async def enrich_by_catalog(
     items: List[str],
-    catalog: List[dict],      # каждый: {id, name, vec?} где vec — str|(None)
+    catalog: List[Dict[str, Any]],  # каждый: {id, name, vec?} где vec — str|(None)
     embed_model: str,
     min_threshold: float,
-) -> List[dict]:
+) -> List[Dict[str, Any]]:
     """
     Возвращает [{text, match_id, score, vec, vec_str}]
     - эмбеддинг для item считаем всегда
@@ -181,47 +213,62 @@ async def enrich_by_catalog(
 
     # векторы для items
     item_vecs = await _embeddings(items, embed_model)
-    A = np.array(item_vecs, dtype=np.float32)  # n x d
 
     # векторы каталога: пробуем взять из БД (vec), если нет — считаем
-    cat_ids = [c["id"] for c in catalog]
-    cat_names = [c["name"] for c in catalog]
-    cat_vecs: List[List[float]] = []
+    cat_ids: List[int] = [int(c["id"]) for c in catalog]
+    cat_names: List[str] = [str(c["name"]) for c in catalog]
+
+    cat_vecs: List[Optional[List[float]]] = []
     need_compute_texts: List[str] = []
     need_idx: List[int] = []
+
     for idx, c in enumerate(catalog):
-        parsed = _parse_pgvector_text(c.get("vec") or "")
+        parsed = _parse_pgvector_text(str(c.get("vec") or ""))
         if parsed is None:
-            need_compute_texts.append(c["name"])
+            need_compute_texts.append(cat_names[idx])
             need_idx.append(idx)
-            cat_vecs.append([])  # placeholder
+            cat_vecs.append(None)  # placeholder
         else:
             cat_vecs.append(parsed)
 
     if need_compute_texts:
         computed = await _embeddings(need_compute_texts, embed_model)
         ptr = 0
-        for j, idx in enumerate(need_idx):
+        for idx in need_idx:
             cat_vecs[idx] = computed[ptr]
             ptr += 1
 
-    B = np.array(cat_vecs, dtype=np.float32) if cat_vecs else np.zeros((0, A.shape[1]), dtype=np.float32)
-    sims = _cosine_matrix(A, B) if (A.size and B.size) else np.zeros((len(items), len(catalog)), dtype=np.float32)
-
-    out: List[dict] = []
+    # сопоставление
+    out: List[Dict[str, Any]] = []
     for i, text in enumerate(items):
-        if sims.shape[1] == 0:
-            out.append({"text": text, "match_id": None, "score": None, "vec": item_vecs[i], "vec_str": _to_vec_str(item_vecs[i])})
+        v_item = item_vecs[i]
+        best_j = -1
+        best_cos = -1.0
+        for j, v_cat in enumerate(cat_vecs):
+            if v_cat is None:
+                continue
+            cos = _cosine_lists(v_item, v_cat)
+            if cos > best_cos:
+                best_cos = cos
+                best_j = j
+
+        if best_j < 0:
+            out.append(
+                {"text": text, "match_id": None, "score": None, "vec": v_item, "vec_str": _to_vec_str(v_item)}
+            )
             continue
-        j = int(np.argmax(sims[i]))
-        cos = float(sims[i, j])
-        score = float(f"{(cos + 1.0) / 2.0:.2f}")
-        match_id = int(cat_ids[j]) if score >= min_threshold else None
-        out.append({
-            "text": text,
-            "match_id": match_id,
-            "score": score if match_id is not None else None,
-            "vec": item_vecs[i],
-            "vec_str": _to_vec_str(item_vecs[i]),
-        })
+
+        score = float(f"{(best_cos + 1.0) / 2.0:.2f}")
+        match_id: Optional[int] = int(cat_ids[best_j]) if score >= min_threshold else None
+
+        out.append(
+            {
+                "text": text,
+                "match_id": match_id,
+                "score": (score if match_id is not None else None),
+                "vec": v_item,
+                "vec_str": _to_vec_str(v_item),
+            }
+        )
+
     return out
