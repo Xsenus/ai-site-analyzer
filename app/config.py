@@ -52,7 +52,7 @@ class Settings(BaseSettings):
 
     # Поддержка старого EMBED_MODEL как алиаса к OPENAI_EMBED_MODEL
     OPENAI_EMBED_MODEL: str = Field(
-        default="text-embedding-3-small",
+        default="text-embedding-3-large",
         validation_alias=AliasChoices("OPENAI_EMBED_MODEL", "EMBED_MODEL"),
     )
     VECTOR_DIM: int = 3072
