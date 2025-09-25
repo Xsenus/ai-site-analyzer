@@ -1,12 +1,35 @@
 from __future__ import annotations
-from typing import Any, Optional
+
+import datetime as dt
+import logging
+from typing import Any, Optional, Iterable
+
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
+
 from app.config import settings
+
+log = logging.getLogger("repo.parsing")
+
+# ---------- лог-утилиты ----------
+
+def _clip(s: Optional[str], n: int = 200) -> str:
+    """Обрезает длинные строки для логов, показывая только начало."""
+    if s is None:
+        return ""
+    s = str(s)
+    return s if len(s) <= n else s[:n] + f"... ({len(s)} chars)"
+
+def _tick(t0: dt.datetime) -> int:
+    """Мс с момента t0."""
+    return int((dt.datetime.now() - t0).total_seconds() * 1000)
+
 
 # ---------- infra / base ----------
 
 async def ensure_description_column(conn: AsyncConnection) -> bool:
+    t0 = dt.datetime.now()
+    log.info("[repo] ensure_description_column: check existence")
     q = text("""
         SELECT 1
         FROM information_schema.columns
@@ -15,25 +38,42 @@ async def ensure_description_column(conn: AsyncConnection) -> bool:
     res = await conn.execute(q)
     exists = res.first() is not None
     if not exists:
+        log.info("[repo] ensure_description_column: adding column public.pars_site.description")
         await conn.execute(text("ALTER TABLE public.pars_site ADD COLUMN description TEXT;"))
+        ms = _tick(t0)
+        log.info("[repo] ensure_description_column: added took_ms=%s", ms)
         return True
+    ms = _tick(t0)
+    log.info("[repo] ensure_description_column: already exists took_ms=%s", ms)
     return False
 
 
 async def fetch_text_par(conn: AsyncConnection, pars_id: int) -> str:
+    t0 = dt.datetime.now()
+    log.info("[repo] fetch_text_par: id=%s", pars_id)
     res = await conn.execute(text("SELECT text_par FROM public.pars_site WHERE id=:id;"), {"id": pars_id})
     row = res.first()
     if not row or not row[0]:
+        ms = _tick(t0)
+        log.error("[repo] fetch_text_par: not found id=%s took_ms=%s", pars_id, ms)
         raise ValueError(f"text_par не найден для pars_site.id={pars_id}")
-    return row[0]
+    text_par = str(row[0])
+    ms = _tick(t0)
+    log.debug("[repo] fetch_text_par: id=%s len=%s sample=%r took_ms=%s", pars_id, len(text_par), _clip(text_par), ms)
+    return text_par
 
 
 async def update_pars_description(conn: AsyncConnection, pars_id: int, description: str) -> bool:
+    t0 = dt.datetime.now()
+    log.info("[repo] update_pars_description: id=%s len=%s sample=%r", pars_id, len(description or ""), _clip(description))
     res = await conn.execute(
         text("UPDATE public.pars_site SET description=:d WHERE id=:id;"),
         {"d": description, "id": pars_id},
     )
-    return res.rowcount == 1
+    ok = res.rowcount == 1
+    ms = _tick(t0)
+    log.info("[repo] update_pars_description: id=%s updated=%s took_ms=%s", pars_id, ok, ms)
+    return ok
 
 
 # ---------- helpers ----------
@@ -43,6 +83,8 @@ async def _table_columns(conn: AsyncConnection, table: str) -> list[tuple[str, s
     Возвращает [(column_name, data_type, udt_name | None)].
     Для vector в PG: data_type='USER-DEFINED', udt_name='vector'
     """
+    t0 = dt.datetime.now()
+    log.info("[repo] _table_columns: table=%s", table)
     q = text("""
         SELECT column_name, data_type, udt_name
         FROM information_schema.columns
@@ -50,39 +92,121 @@ async def _table_columns(conn: AsyncConnection, table: str) -> list[tuple[str, s
         ORDER BY ordinal_position
     """)
     res = await conn.execute(q, {"t": table})
-    return [(str(r[0]), str(r[1]), (str(r[2]) if r[2] is not None else None)) for r in res.fetchall()]
+    rows = res.fetchall()
+    ms = _tick(t0)
+    log.debug("[repo] _table_columns: table=%s columns=%s took_ms=%s",
+              table, [r[0] for r in rows], ms)
+    return [(str(r[0]), str(r[1]), (str(r[2]) if r[2] is not None else None)) for r in rows]
 
 
 async def _detect_text_column(conn: AsyncConnection, table: str, candidates: list[str]) -> str:
+    t0 = dt.datetime.now()
+    log.info("[repo] _detect_text_column: table=%s candidates=%s", table, candidates)
     cols = await _table_columns(conn, table)
     names = {c[0].lower(): c[0] for c in cols}
     for cand in candidates:
         if cand.lower() in names:
-            return names[cand.lower()]
+            col = names[cand.lower()]
+            ms = _tick(t0)
+            log.info("[repo] _detect_text_column: table=%s matched=%s took_ms=%s", table, col, ms)
+            return col
     for col, dtype, _ in cols:
         if dtype in ("text", "character varying", "varchar"):
+            ms = _tick(t0)
+            log.info("[repo] _detect_text_column: table=%s auto=%s dtype=%s took_ms=%s", table, col, dtype, ms)
             return col
+    ms = _tick(t0)
+    log.error("[repo] _detect_text_column: table=%s NOT FOUND took_ms=%s", table, ms)
     raise RuntimeError(f"Не найдено текстовой колонки в public.{table}")
 
 
 async def _detect_vector_column(conn: AsyncConnection, table: str, candidates: list[str]) -> Optional[str]:
+    t0 = dt.datetime.now()
+    log.info("[repo] _detect_vector_column: table=%s candidates=%s", table, candidates)
     cols = await _table_columns(conn, table)
     names = {c[0].lower(): c[0] for c in cols}
     for cand in candidates:
         if cand.lower() in names:
-            return names[cand.lower()]
+            col = names[cand.lower()]
+            ms = _tick(t0)
+            log.info("[repo] _detect_vector_column: table=%s matched=%s took_ms=%s", table, col, ms)
+            return col
     # авто: ищем data_type='USER-DEFINED' и udt_name='vector'
     for col, dtype, udt in cols:
         if dtype == "USER-DEFINED" and (udt or "").lower() == "vector":
+            ms = _tick(t0)
+            log.info("[repo] _detect_vector_column: table=%s auto=%s took_ms=%s", table, col, ms)
             return col
+    ms = _tick(t0)
+    log.info("[repo] _detect_vector_column: table=%s vector NOT FOUND took_ms=%s", table, ms)
+    return None
+
+
+def _as_pgvector_literal(vec: Any) -> Optional[str]:
+    """
+    Приводит вход к строке формата pgvector: "[v1, v2, ...]".
+    Допустимые входы:
+      - list[float] | tuple[float]
+      - str (если уже "[...]" или "0.1,0.2,..." — обернём в [])
+      - любой Iterable чисел
+      - None -> None
+    """
+    # Логируем только тип (без длинных данных, чтобы не засорять логи)
+    log.debug("[repo] _as_pgvector_literal: input_type=%s", type(vec).__name__)
+    if vec is None:
+        return None
+
+    # Списки/кортежи чисел -> "[a, b, c]"
+    if isinstance(vec, (list, tuple)):
+        try:
+            arr = [float(x) for x in vec]
+            out = "[" + ", ".join(f"{x:.12g}" for x in arr) + "]"
+            log.debug("[repo] _as_pgvector_literal: from seq len=%s", len(arr))
+            return out
+        except Exception as e:
+            log.debug("[repo] _as_pgvector_literal: seq parse failed: %s", e)
+
+    # Строковые варианты
+    if isinstance(vec, str):
+        s = vec.strip()
+        if s.startswith("[") and s.endswith("]"):
+            log.debug("[repo] _as_pgvector_literal: from string bracketed len=%s", len(s))
+            return s
+        if "," in s:
+            out = "[" + s + "]"
+            log.debug("[repo] _as_pgvector_literal: from string csv len=%s", len(s))
+            return out
+        try:
+            _ = float(s)
+            out = "[" + s + "]"
+            log.debug("[repo] _as_pgvector_literal: from string single number")
+            return out
+        except Exception as e:
+            log.debug("[repo] _as_pgvector_literal: string parse failed: %s", e)
+            return None
+
+    # Общий Iterable чисел (не строки/байты)
+    if isinstance(vec, Iterable) and not isinstance(vec, (str, bytes)):
+        try:
+            arr = [float(x) for x in vec]
+            out = "[" + ", ".join(f"{x:.12g}" for x in arr) + "]"
+            log.debug("[repo] _as_pgvector_literal: from iterable len=%s", len(arr))
+            return out
+        except Exception as e:
+            log.debug("[repo] _as_pgvector_literal: iterable parse failed: %s", e)
+            return None
+
     return None
 
 
 # ---------- catalogs (возвращают список dict: {id, name, vec?}) ----------
 
 async def fetch_goods_types_catalog(conn: AsyncConnection) -> list[dict]:
+    t0 = dt.datetime.now()
     table = settings.IB_GOODS_TYPES_TABLE or "ib_goods_types"
     id_col = settings.IB_GOODS_TYPES_ID_COLUMN or "id"
+    log.info("[repo] fetch_goods_types_catalog: table=%s id_col=%s", table, id_col)
+
     name_col = settings.IB_GOODS_TYPES_NAME_COLUMN or await _detect_text_column(
         conn, table, ["goods_type_name", "name", "goods_type", "title", "label"]
     )
@@ -90,11 +214,14 @@ async def fetch_goods_types_catalog(conn: AsyncConnection) -> list[dict]:
     if vec_col is None:
         vec_col = await _detect_vector_column(conn, table, ["goods_type_vector", "vector", "emb", "embedding"])
 
+    log.info("[repo] fetch_goods_types_catalog: table=%s name_col=%s vec_col=%s", table, name_col, vec_col)
+
     company_filter = ""
     params: dict[str, Any] = {}
     if settings.IB_GOODS_TYPES_COMPANY_ID is not None:
         company_filter = 'WHERE "company_id" = :cid'
         params["cid"] = settings.IB_GOODS_TYPES_COMPANY_ID
+        log.info("[repo] fetch_goods_types_catalog: filter company_id=%s", params["cid"])
 
     if vec_col:
         q = text(
@@ -109,15 +236,22 @@ async def fetch_goods_types_catalog(conn: AsyncConnection) -> list[dict]:
             f'ORDER BY "{id_col}";'
         )
     res = await conn.execute(q, params)
+    rows = res.fetchall()
     out: list[dict] = []
-    for r in res.fetchall():
+    for r in rows:
         out.append({"id": int(r[0]), "name": str(r[1]), "vec": (str(r[2]) if r[2] is not None else None)})
+    ms = _tick(t0)
+    log.info("[repo] fetch_goods_types_catalog: table=%s rows=%s took_ms=%s", table, len(out), ms)
+    log.debug("[repo] fetch_goods_types_catalog: sample=%r", out[:3])
     return out
 
 
 async def fetch_equipment_catalog(conn: AsyncConnection) -> list[dict]:
+    t0 = dt.datetime.now()
     table = settings.IB_EQUIPMENT_TABLE or "ib_equipment"
     id_col = settings.IB_EQUIPMENT_ID_COLUMN or "id"
+    log.info("[repo] fetch_equipment_catalog: table=%s id_col=%s", table, id_col)
+
     name_col = settings.IB_EQUIPMENT_NAME_COLUMN or await _detect_text_column(
         conn, table, ["equipment_name", "name", "equipment", "title", "label"]
     )
@@ -125,11 +259,14 @@ async def fetch_equipment_catalog(conn: AsyncConnection) -> list[dict]:
     if vec_col is None:
         vec_col = await _detect_vector_column(conn, table, ["equipment_vector", "vector", "emb", "embedding"])
 
+    log.info("[repo] fetch_equipment_catalog: table=%s name_col=%s vec_col=%s", table, name_col, vec_col)
+
     company_filter = ""
     params: dict[str, Any] = {}
     if settings.IB_EQUIPMENT_COMPANY_ID is not None:
         company_filter = 'WHERE "company_id" = :cid'
         params["cid"] = settings.IB_EQUIPMENT_COMPANY_ID
+        log.info("[repo] fetch_equipment_catalog: filter company_id=%s", params["cid"])
 
     if vec_col:
         q = text(
@@ -144,15 +281,21 @@ async def fetch_equipment_catalog(conn: AsyncConnection) -> list[dict]:
             f'ORDER BY "{id_col}";'
         )
     res = await conn.execute(q, params)
+    rows = res.fetchall()
     out: list[dict] = []
-    for r in res.fetchall():
+    for r in rows:
         out.append({"id": int(r[0]), "name": str(r[1]), "vec": (str(r[2]) if r[2] is not None else None)})
+    ms = _tick(t0)
+    log.info("[repo] fetch_equipment_catalog: table=%s rows=%s took_ms=%s", table, len(out), ms)
+    log.debug("[repo] fetch_equipment_catalog: sample=%r", out[:3])
     return out
 
 
 # ---------- inserts (enriched) ----------
 
 async def insert_ai_site_prodclass(conn: AsyncConnection, pars_id: int, prodclass: int, score: float) -> int:
+    t0 = dt.datetime.now()
+    log.info("[repo] insert_ai_site_prodclass: pars_id=%s prodclass=%s score=%s", pars_id, prodclass, score)
     res = await conn.execute(
         text("""
             INSERT INTO public.ai_site_prodclass (text_pars_id, prodclass, prodclass_score)
@@ -161,50 +304,103 @@ async def insert_ai_site_prodclass(conn: AsyncConnection, pars_id: int, prodclas
         """),
         {"pid": pars_id, "pc": prodclass, "sc": score},
     )
-    return int(res.scalar_one())
+    new_id = int(res.scalar_one())
+    ms = _tick(t0)
+    log.info("[repo] insert_ai_site_prodclass: inserted id=%s took_ms=%s", new_id, ms)
+    return new_id
 
 
 async def insert_ai_site_equipment_enriched(
     conn: AsyncConnection,
     pars_id: int,
-    items: list[dict],  # {text, match_id, score, vec_str}
+    items: list[dict],  # ожидаются ключи: {"text", "match_id", "score", "vec" | "vec_str"}
 ) -> list[tuple[int, str]]:
+    t0 = dt.datetime.now()
+    log.info("[repo] insert_ai_site_equipment_enriched: pars_id=%s items=%s", pars_id, len(items))
     out: list[tuple[int, str]] = []
-    for it in items:
-        res = await conn.execute(
-            text("""
-                INSERT INTO public.ai_site_equipment
-                    (text_pars_id, equipment, equipment_score, equipment_ID, text_vector)
-                VALUES
-                    (:pid, :eq, :sc, :eid, :vec::vector)
-                RETURNING id, equipment;
-            """),
-            {"pid": pars_id, "eq": it["text"], "sc": it["score"], "eid": it["match_id"], "vec": it["vec_str"]},
-        )
+    for idx, it in enumerate(items, 1):
+        raw_vec = it.get("vec", it.get("vec_str"))
+        vec_lit = _as_pgvector_literal(raw_vec)  # "[...]" или None
+        log.debug("[repo] insert_ai_site_equipment_enriched: item#%s text=%r match_id=%s score=%s has_vec=%s",
+                  idx, _clip(it.get("text")), it.get("match_id"), it.get("score"), bool(vec_lit))
+
+        if vec_lit is None:
+            # Нет вектора — пишем NULL (или можно пропустить запись по вашей политике)
+            res = await conn.execute(
+                text("""
+                    INSERT INTO public.ai_site_equipment
+                        (text_pars_id, equipment, equipment_score, equipment_ID, text_vector)
+                    VALUES
+                        (:pid, :eq, :sc, :eid, NULL)
+                    RETURNING id, equipment;
+                """),
+                {"pid": pars_id, "eq": it["text"], "sc": it["score"], "eid": it["match_id"]},
+            )
+        else:
+            # Используем CAST(:vec AS vector) — корректно парсится драйвером и PG
+            res = await conn.execute(
+                text("""
+                    INSERT INTO public.ai_site_equipment
+                        (text_pars_id, equipment, equipment_score, equipment_ID, text_vector)
+                    VALUES
+                        (:pid, :eq, :sc, :eid, CAST(:vec AS vector))
+                    RETURNING id, equipment;
+                """),
+                {"pid": pars_id, "eq": it["text"], "sc": it["score"], "eid": it["match_id"], "vec": vec_lit},
+            )
+
         row = res.first()
         if row:
             out.append((int(row[0]), str(row[1])))
+
+    ms = _tick(t0)
+    log.info("[repo] insert_ai_site_equipment_enriched: inserted=%s took_ms=%s", len(out), ms)
+    log.debug("[repo] insert_ai_site_equipment_enriched: sample=%r", out[:3])
     return out
 
 
 async def insert_ai_site_goods_types_enriched(
     conn: AsyncConnection,
     pars_id: int,
-    items: list[dict],  # {text, match_id, score, vec_str}
+    items: list[dict],  # ожидаются ключи: {"text", "match_id", "score", "vec" | "vec_str"}
 ) -> list[tuple[int, str]]:
+    t0 = dt.datetime.now()
+    log.info("[repo] insert_ai_site_goods_types_enriched: pars_id=%s items=%s", pars_id, len(items))
     out: list[tuple[int, str]] = []
-    for it in items:
-        res = await conn.execute(
-            text("""
-                INSERT INTO public.ai_site_goods_types
-                    (text_par_id, goods_type, goods_types_score, goods_type_ID, text_vector)
-                VALUES
-                    (:pid, :gt, :sc, :gid, :vec::vector)
-                RETURNING id, goods_type;
-            """),
-            {"pid": pars_id, "gt": it["text"], "sc": it["score"], "gid": it["match_id"], "vec": it["vec_str"]},
-        )
+    for idx, it in enumerate(items, 1):
+        raw_vec = it.get("vec", it.get("vec_str"))
+        vec_lit = _as_pgvector_literal(raw_vec)
+        log.debug("[repo] insert_ai_site_goods_types_enriched: item#%s text=%r match_id=%s score=%s has_vec=%s",
+                  idx, _clip(it.get("text")), it.get("match_id"), it.get("score"), bool(vec_lit))
+
+        if vec_lit is None:
+            res = await conn.execute(
+                text("""
+                    INSERT INTO public.ai_site_goods_types
+                        (text_par_id, goods_type, goods_types_score, goods_type_ID, text_vector)
+                    VALUES
+                        (:pid, :gt, :sc, :gid, NULL)
+                    RETURNING id, goods_type;
+                """),
+                {"pid": pars_id, "gt": it["text"], "sc": it["score"], "gid": it["match_id"]},
+            )
+        else:
+            res = await conn.execute(
+                text("""
+                    INSERT INTO public.ai_site_goods_types
+                        (text_par_id, goods_type, goods_types_score, goods_type_ID, text_vector)
+                    VALUES
+                        (:pid, :gt, :sc, :gid, CAST(:vec AS vector))
+                    RETURNING id, goods_type;
+                """),
+                {"pid": pars_id, "gt": it["text"], "sc": it["score"], "gid": it["match_id"], "vec": vec_lit},
+            )
+
         row = res.first()
         if row:
             out.append((int(row[0]), str(row[1])))
+
+    ms = _tick(t0)
+    log.info("[repo] insert_ai_site_goods_types_enriched: inserted=%s took_ms=%s", len(out), ms)
+    log.debug("[repo] insert_ai_site_goods_types_enriched: sample=%r", out[:3])
     return out
