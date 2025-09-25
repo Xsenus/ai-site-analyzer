@@ -224,13 +224,43 @@ async def analyze(pars_id: int, body: AnalyzeRequest):
             t_w = dt.datetime.now()
             log.info("[analyze/write] begin pars_id=%s", pars_id)
 
+            # 1) колонка description (на secondary её могло не быть)
             added = await repo.ensure_description_column(conn)
             log.info("[analyze/write] ensure_description_column pars_id=%s added=%s", pars_id, added)
 
+            # 2) гарантируем родителя (безопасное зеркалирование)
+            inserted_ps = await repo.ensure_pars_site_row(
+                conn=conn,
+                pars_id=pars_id,
+                text_par=text_par,
+                description=str(parsed.get("DESCRIPTION", "")),
+            )
+            log.info("[analyze/write] ensure_pars_site_row pars_id=%s inserted=%s", pars_id, inserted_ps)
+
+            # 3) пробуем обновить description ещё раз (идемпотентно)
             updated = await repo.update_pars_description(conn, pars_id, str(parsed.get("DESCRIPTION", "")))
             log.info("[analyze/write] update_pars_description pars_id=%s updated=%s", pars_id, updated)
 
-            # Жёсткая валидация входа для prodclass
+            # ---- ВАЖНО: если родителя на этой БД нет, детей не пишем ----
+            parent_present = bool(inserted_ps or updated)
+            if not parent_present:
+                ms_write = _tick(t_w)
+                log.warning(
+                    "[analyze/write] parent missing on this DB, skip child inserts pars_id=%s took_ms=%s",
+                    pars_id, ms_write
+                )
+                return {
+                    "added_description_column": added,
+                    "updated_pars_site_description": updated,
+                    "ai_site_prodclass_row_id": None,
+                    "prodclass_score": prodclass_score_opt,
+                    "prodclass_score_source": parsed.get("PRODCLASS_SCORE_SOURCE"),
+                    "equipment_rows": [],
+                    "goods_type_rows": [],
+                    "parent_missing_on_this_db": True,
+                }
+
+            # 4) жёсткая валидация prodclass
             if prodclass_id_opt is None:
                 log.error("[analyze/write] prodclass_id missing pars_id=%s", pars_id)
                 raise ValueError("PRODCLASS отсутствует или не является целым числом")
@@ -238,19 +268,21 @@ async def analyze(pars_id: int, body: AnalyzeRequest):
                 log.error("[analyze/write] prodclass_score missing pars_id=%s", pars_id)
                 raise ValueError("PRODCLASS_SCORE отсутствует или не является числом")
 
+            # 5) prodclass
             prodclass_row_id = await repo.insert_ai_site_prodclass(
                 conn, pars_id, prodclass_id_opt, float(prodclass_score_opt)
             )
             log.info("[analyze/write] insert_ai_site_prodclass pars_id=%s row_id=%s id=%s score=%s",
-                     pars_id, prodclass_row_id, prodclass_id_opt, prodclass_score_opt)
+                    pars_id, prodclass_row_id, prodclass_id_opt, prodclass_score_opt)
 
+            # 6) enriched вставки
             eq_rows = await repo.insert_ai_site_equipment_enriched(conn, pars_id, equip_enriched)
             log.info("[analyze/write] insert_ai_site_equipment_enriched pars_id=%s inserted=%s",
-                     pars_id, len(eq_rows))
+                    pars_id, len(eq_rows))
 
             gt_rows = await repo.insert_ai_site_goods_types_enriched(conn, pars_id, goods_enriched)
             log.info("[analyze/write] insert_ai_site_goods_types_enriched pars_id=%s inserted=%s",
-                     pars_id, len(gt_rows))
+                    pars_id, len(gt_rows))
 
             equip_rows_fmt = [{"id": rid, "equipment": name} for rid, name in (eq_rows or [])]
             goods_rows_fmt = [{"id": rid, "goods_type": name} for rid, name in (gt_rows or [])]
@@ -267,6 +299,7 @@ async def analyze(pars_id: int, body: AnalyzeRequest):
                 "equipment_rows": equip_rows_fmt,
                 "goods_type_rows": goods_rows_fmt,
             }
+
 
         if not is_dry:
             primary: Optional[AsyncEngine] = primary_opt
