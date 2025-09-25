@@ -1,6 +1,14 @@
 # app/main.py
 from __future__ import annotations
 
+# --- Windows async psycopg fix: must be set before creating event loop / DB engines ---
+import sys
+import asyncio
+
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# ------------------------------------------------------------------------------
+
 import logging
 import time
 from contextlib import asynccontextmanager
