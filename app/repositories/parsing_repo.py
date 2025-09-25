@@ -1,8 +1,8 @@
-# app/repositories/parsing_repo.py
 from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from typing import Any, Optional, Iterable
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -76,6 +76,7 @@ async def update_pars_description(conn: AsyncConnection, pars_id: int, descripti
     log.info("[repo] update_pars_description: id=%s updated=%s took_ms=%s", pars_id, ok, ms)
     return ok
 
+
 async def ensure_pars_site_row(
     conn: AsyncConnection,
     pars_id: int,
@@ -85,27 +86,23 @@ async def ensure_pars_site_row(
     """
     Идемпотентное обеспечение наличия строки в public.pars_site для данного id.
     Стратегия «безопасного зеркалирования»:
-      1) Сначала пробуем UPDATE (ничего не вставляем).
-      2) Если UPDATE не затронул строк — аккуратно решаем, можно ли делать INSERT:
-         - Если в pars_site есть company_id NOT NULL БЕЗ default — НЕ вставляем, чтобы не ловить FK/NN ошибки.
-           Возвращаем inserted=False.
-         - Если company_id допускает NULL или у него есть DEFAULT — вставляем только (id, text_par, description).
-    Возвращает: True, если была вставка (INSERT), False — если строки уже была или инсерт пропущен.
+      1) UPDATE
+      2) Если строки нет — проверяем company_id: если NOT NULL без DEFAULT, пропускаем INSERT.
+         Иначе INSERT (id, text_par, description) + ON CONFLICT UPDATE description.
+    Возвращает: True, если была вставка (INSERT), False — если строка существовала или инсерт пропущен.
     """
     t0 = dt.datetime.now()
     log.info("[repo] ensure_pars_site_row: id=%s", pars_id)
 
-    # 1) Пытаемся обновить существующую строку (самый безопасный путь)
     upd = await conn.execute(
         text("UPDATE public.pars_site SET description=:d WHERE id=:id;"),
         {"d": description, "id": pars_id},
     )
     if upd.rowcount and upd.rowcount > 0:
-        took = int((dt.datetime.now() - t0).total_seconds() * 1000)
+        took = _tick(t0)
         log.info("[repo] ensure_pars_site_row: id=%s existed=True took_ms=%s", pars_id, took)
-        return False  # не вставляли, строка была
+        return False
 
-    # 2) Строки нет — решаем, можно ли безопасно вставить
     # Проверяем ограничение на company_id
     meta = await conn.execute(
         text("""
@@ -125,8 +122,7 @@ async def ensure_pars_site_row(
         company_has_default = (col_default is not None)
 
     if not company_nullable and not company_has_default:
-        # Нельзя надёжно вставить без знания company_id — пропускаем INSERT
-        took = int((dt.datetime.now() - t0).total_seconds() * 1000)
+        took = _tick(t0)
         log.warning(
             "[repo] ensure_pars_site_row: id=%s insert SKIPPED — pars_site.company_id is NOT NULL w/o DEFAULT; "
             "mirror requires company mapping. took_ms=%s",
@@ -134,7 +130,6 @@ async def ensure_pars_site_row(
         )
         return False
 
-    # 3) Вставка допустима — делаем INSERT с минимальным набором колонок
     await conn.execute(
         text("""
             INSERT INTO public.pars_site (id, text_par, description)
@@ -144,17 +139,14 @@ async def ensure_pars_site_row(
         """),
         {"id": pars_id, "tp": text_par, "d": description},
     )
-    took = int((dt.datetime.now() - t0).total_seconds() * 1000)
+    took = _tick(t0)
     log.info("[repo] ensure_pars_site_row: id=%s inserted=True took_ms=%s", pars_id, took)
     return True
 
-# ---------- helpers ----------
+
+# ---------- helpers for catalogs ----------
 
 async def _table_columns(conn: AsyncConnection, table: str) -> list[tuple[str, str, Optional[str]]]:
-    """
-    Возвращает [(column_name, data_type, udt_name | None)].
-    Для vector в PG: data_type='USER-DEFINED', udt_name='vector'
-    """
     t0 = dt.datetime.now()
     log.info("[repo] _table_columns: table=%s", table)
     q = text("""
@@ -214,14 +206,6 @@ async def _detect_vector_column(conn: AsyncConnection, table: str, candidates: l
 
 
 def _as_pgvector_literal(vec: Any) -> Optional[str]:
-    """
-    Приводит вход к строке формата pgvector: "[v1, v2, ...]".
-    Допустимые входы:
-      - list[float] | tuple[float]
-      - str (если уже "[...]" или "0.1,0.2,..." — обернём в [])
-      - любой Iterable чисел
-      - None -> None
-    """
     log.debug("[repo] _as_pgvector_literal: input_type=%s", type(vec).__name__)
     if vec is None:
         return None
@@ -230,8 +214,8 @@ def _as_pgvector_literal(vec: Any) -> Optional[str]:
         try:
             arr = [float(x) for x in vec]
             return "[" + ", ".join(f"{x:.12g}" for x in arr) + "]"
-        except Exception as e:
-            log.debug("[repo] _as_pgvector_literal: seq parse failed: %s", e)
+        except Exception:
+            pass
 
     if isinstance(vec, str):
         s = vec.strip()
@@ -240,18 +224,16 @@ def _as_pgvector_literal(vec: Any) -> Optional[str]:
         if "," in s:
             return "[" + s + "]"
         try:
-            _ = float(s)
+            float(s)
             return "[" + s + "]"
-        except Exception as e:
-            log.debug("[repo] _as_pgvector_literal: string parse failed: %s", e)
+        except Exception:
             return None
 
     if isinstance(vec, Iterable) and not isinstance(vec, (str, bytes)):
         try:
             arr = [float(x) for x in vec]
             return "[" + ", ".join(f"{x:.12g}" for x in arr) + "]"
-        except Exception as e:
-            log.debug("[repo] _as_pgvector_literal: iterable parse failed: %s", e)
+        except Exception:
             return None
 
     return None
@@ -334,7 +316,7 @@ async def fetch_equipment_catalog(conn: AsyncConnection) -> list[dict]:
         )
     else:
         q = text(
-            f'SELECT "{id_col}" AS id, "{name_col}" AS name, NULL::text AS vec '
+            f'SESELECT "{id_col}" AS id, "{name_col}" AS name, NULL::text AS vec '
             f'FROM public.{table} {company_filter} '
             f'ORDER BY "{id_col}";'
         )
@@ -371,7 +353,7 @@ async def insert_ai_site_prodclass(conn: AsyncConnection, pars_id: int, prodclas
 async def insert_ai_site_equipment_enriched(
     conn: AsyncConnection,
     pars_id: int,
-    items: list[dict],  # ожидаются ключи: {"text", "match_id", "score", "vec" | "vec_str"}
+    items: list[dict],  # {"text","match_id","score","vec"|"vec_str"}
 ) -> list[tuple[int, str]]:
     t0 = dt.datetime.now()
     log.info("[repo] insert_ai_site_equipment_enriched: pars_id=%s items=%s", pars_id, len(items))
@@ -379,8 +361,6 @@ async def insert_ai_site_equipment_enriched(
     for idx, it in enumerate(items, 1):
         raw_vec = it.get("vec", it.get("vec_str"))
         vec_lit = _as_pgvector_literal(raw_vec)  # "[...]" или None
-        log.debug("[repo] insert_ai_site_equipment_enriched: item#%s text=%r match_id=%s score=%s has_vec=%s",
-                  idx, _clip(it.get("text")), it.get("match_id"), it.get("score"), bool(vec_lit))
 
         if vec_lit is None:
             res = await conn.execute(
@@ -418,7 +398,7 @@ async def insert_ai_site_equipment_enriched(
 async def insert_ai_site_goods_types_enriched(
     conn: AsyncConnection,
     pars_id: int,
-    items: list[dict],  # ожидаются ключи: {"text", "match_id", "score", "vec" | "vec_str"}
+    items: list[dict],  # {"text","match_id","score","vec"|"vec_str"}
 ) -> list[tuple[int, str]]:
     t0 = dt.datetime.now()
     log.info("[repo] insert_ai_site_goods_types_enriched: pars_id=%s items=%s", pars_id, len(items))
@@ -426,8 +406,6 @@ async def insert_ai_site_goods_types_enriched(
     for idx, it in enumerate(items, 1):
         raw_vec = it.get("vec", it.get("vec_str"))
         vec_lit = _as_pgvector_literal(raw_vec)
-        log.debug("[repo] insert_ai_site_goods_types_enriched: item#%s text=%r match_id=%s score=%s has_vec=%s",
-                  idx, _clip(it.get("text")), it.get("match_id"), it.get("score"), bool(vec_lit))
 
         if vec_lit is None:
             res = await conn.execute(
@@ -460,3 +438,43 @@ async def insert_ai_site_goods_types_enriched(
     log.info("[repo] insert_ai_site_goods_types_enriched: inserted=%s took_ms=%s", len(out), ms)
     log.debug("[repo] insert_ai_site_goods_types_enriched: sample=%r", out[:3])
     return out
+
+
+# ---------- by-site lookup ----------
+
+async def find_pars_id_by_site(conn: AsyncConnection, site_or_host: str) -> Optional[int]:
+    """
+    Ищем pars_site.id:
+      1) точное совпадение по domain_1 (без www)
+      2) по хосту, извлечённому из url (host без www)
+    """
+    host = (site_or_host or "").lower().strip()
+
+    # 1) Совпадение по domain_1
+    q1 = text("""
+        SELECT id
+        FROM public.pars_site
+        WHERE lower(regexp_replace(domain_1, '^www\\.', '')) = :h
+        ORDER BY id ASC
+        LIMIT 1
+    """)
+    r1 = await conn.execute(q1, {"h": host})
+    row = r1.first()
+    if row and row[0]:
+        return int(row[0])
+
+    # 2) Совпадение по url → host (обрезаем схему/путь/www)
+    q2 = text("""
+        SELECT id
+        FROM public.pars_site
+        WHERE lower(regexp_replace(
+            regexp_replace(
+                regexp_replace(url, '^https?://', ''), -- без протокола
+            '/.*$', ''),                               -- без пути
+        '^www\\.', '')) = :h
+        ORDER BY id ASC
+        LIMIT 1
+    """)
+    r2 = await conn.execute(q2, {"h": host})
+    row2 = r2.first()
+    return int(row2[0]) if row2 and row2[0] else None
