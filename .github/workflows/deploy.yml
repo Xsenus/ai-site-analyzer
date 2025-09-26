@@ -1,0 +1,97 @@
+name: Deploy to VPS (ai-site-analyzer)
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SSH to VPS and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euxo pipefail
+
+            APP_DIR="${{ secrets.APP_DIR }}"
+            SERVICE="${{ secrets.SERVICE_NAME }}"
+            REPO_URL="https://github.com/Xsenus/ai-site-analyzer.git"
+
+            # 0) Базовые пакеты
+            if ! command -v git >/dev/null 2>&1; then
+              apt-get update
+              apt-get install -y git
+            fi
+            if ! command -v python3 >/dev/null 2>&1; then
+              apt-get update
+              apt-get install -y python3 python3-venv python3-pip
+            fi
+            if ! command -v rsync >/dev/null 2>&1; then
+              apt-get update
+              apt-get install -y rsync
+            fi
+
+            # 1) Подготовка каталога
+            mkdir -p "$APP_DIR"
+            cd "$APP_DIR"
+
+            # Лок на время деплоя (защита от параллельных запусков)
+            exec 9>"/tmp/ai-site-analyzer.deploy.lock"
+            flock -n 9 || { echo "Another deploy is running"; exit 1; }
+
+            echo "[1/7] Клонирование во временную папку"
+            TMP_DIR="$(mktemp -d)"
+            git clone --depth=1 "$REPO_URL" "$TMP_DIR"
+            cd "$TMP_DIR"
+            git fetch origin main --depth=1
+            git checkout -B main origin/main
+
+            echo "[2/7] Rsync в $APP_DIR (без .env/.venv/.git)"
+            rsync -a --delete \
+              --exclude ".venv/" \
+              --exclude ".env" \
+              --exclude ".git/" \
+              "$TMP_DIR"/ "$APP_DIR"/
+
+            echo "[3/7] Виртуальное окружение"
+            cd "$APP_DIR"
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+            . .venv/bin/activate
+            python -m pip install -U pip wheel
+
+            echo "[4/7] Установка зависимостей"
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt
+            fi
+
+            echo "[5/7] Alembic миграции (если есть)"
+            if [ -f alembic.ini ]; then
+              alembic upgrade head || true
+            fi
+
+            echo "[6/7] Перезапуск сервиса"
+            systemctl daemon-reload
+            systemctl restart "$SERVICE" || true
+
+            echo "[7/7] Логи статуса"
+            systemctl status "$SERVICE" --no-pager || true
+            journalctl -u "$SERVICE" -n 200 --no-pager || true
+
+            # Уборка
+            rm -rf "$TMP_DIR"
