@@ -10,6 +10,7 @@ class AnalyzeRequest(BaseModel):
     return_prompt: bool = Field(default=False)
     return_answer_raw: bool = Field(default=True)
     sync_mode: Literal["primary_only", "dual_write", "fallback_to_secondary"] | None = None
+    company_id: int | None = Field(default=None, ge=1, description="ID компании для pars_site.company_id")
 
 
 class AnalyzeResponse(BaseModel):

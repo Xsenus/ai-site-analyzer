@@ -741,6 +741,12 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
     log.info("[analyze] config pars_id=%s mode=%s chat_model=%s embed_model=%s",
              pars_id, mode.value, chat_model or "∅", embed_model or "∅")
 
+    company_id_opt: Optional[int] = _as_int(getattr(body, "company_id", None))
+    if getattr(body, "company_id", None) is not None and company_id_opt is None:
+        log.warning("[analyze] invalid company_id provided pars_id=%s value=%r", pars_id, body.company_id)
+    if company_id_opt is not None:
+        log.info("[analyze] company_id resolved pars_id=%s company_id=%s", pars_id, company_id_opt)
+
     if not chat_model:
         log.error("[analyze] no chat_model pars_id=%s", pars_id)
         raise HTTPException(status_code=400, detail="CHAT_MODEL не задан")
@@ -915,6 +921,7 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             "took_ms": description_embed_ms,
             "error": description_embed_error,
         },
+        "company_id": company_id_opt,
     }
     log.info("[analyze] write phase pars_id=%s dry_run=%s mode=%s", pars_id, is_dry, mode.value)
 
@@ -940,6 +947,7 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             pars_id=pars_id,
             text_par=text_par,
             description=description_text,
+            company_id=company_id_opt,
         )
         log.info(
             "[analyze/write] ensure_pars_site_row pars_id=%s status=%s",
@@ -1039,6 +1047,7 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             "pars_site_status": pars_site_result.status,
             "pars_site_skip_reason": pars_site_result.reason,
             "mirror_skipped": (pars_site_result.status == "skipped"),
+            "company_id_used": company_id_opt,
         }
 
     try:
