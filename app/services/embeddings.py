@@ -135,10 +135,13 @@ async def openai_embed(text: str, *, timeout: float = 12.0) -> List[float]:
         r = await client.post("https://api.openai.com/v1/embeddings", headers=headers, json=payload)
         r.raise_for_status()
         data = r.json()
+    try:
         vec = data["data"][0]["embedding"]
-        if not isinstance(vec, list) or not vec:
-            raise RuntimeError("bad embedding payload from OpenAI")
-        return [float(x) for x in vec]
+    except (KeyError, TypeError, IndexError) as exc:
+        raise RuntimeError("bad embedding payload from OpenAI") from exc
+    if not isinstance(vec, list) or not vec:
+        raise RuntimeError("bad embedding payload from OpenAI")
+    return [float(x) for x in vec]
 
 
 # ----------------------------
@@ -240,24 +243,38 @@ async def embed_many(texts: List[str], *, timeout: float = 12.0) -> List[List[fl
 
             # собираем эмбеддинги чанков
             chunk_vectors: List[List[float]] = []
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                for batch in _batches(expanded_texts, EMBED_BATCH_SIZE):
-                    payload = {"model": OPENAI_EMBED_MODEL, "input": batch}
-                    r = await client.post(url, headers=headers, json=payload)
-                    r.raise_for_status()
-                    data = r.json()
-                    chunk_vectors.extend([item["embedding"] for item in data["data"]])
-
-            # агрегируем обратно по исходным текстам (усреднение по чанкам)
-            pos = 0
-            for i, idx in enumerate(to_process_indices):
-                k = chunks_per_text[i]
-                if k == 1:
-                    results[idx] = [float(x) for x in chunk_vectors[pos]]
-                else:
-                    vecs = [[float(x) for x in v] for v in chunk_vectors[pos : pos + k]]
-                    results[idx] = _avg_vectors(vecs)
-                pos += k
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    for batch in _batches(expanded_texts, EMBED_BATCH_SIZE):
+                        payload = {"model": OPENAI_EMBED_MODEL, "input": batch}
+                        r = await client.post(url, headers=headers, json=payload)
+                        r.raise_for_status()
+                        data = r.json()
+                        items = data.get("data") if isinstance(data, dict) else None
+                        if not isinstance(items, list):
+                            raise RuntimeError("bad embedding payload from OpenAI")
+                        chunk_vectors.extend([item["embedding"] for item in items])
+            except Exception as ex:
+                log.warning("OpenAI embed_many batch failed: %s", ex)
+            else:
+                # агрегируем обратно по исходным текстам (усреднение по чанкам)
+                pos = 0
+                for i, idx in enumerate(to_process_indices):
+                    k = chunks_per_text[i]
+                    if pos + k > len(chunk_vectors):
+                        log.warning(
+                            "OpenAI embed_many: expected %d vectors for text %d, got %d",
+                            k,
+                            idx,
+                            len(chunk_vectors) - pos,
+                        )
+                        break
+                    if k == 1:
+                        results[idx] = [float(x) for x in chunk_vectors[pos]]
+                    else:
+                        vecs = [[float(x) for x in v] for v in chunk_vectors[pos : pos + k]]
+                        results[idx] = _avg_vectors(vecs)
+                    pos += k
 
     # 3) финал: заменяем None на пустые векторы
     return [r if isinstance(r, list) else [] for r in results]
