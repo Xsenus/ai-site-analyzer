@@ -153,8 +153,36 @@ def _extract_section(tag: str, text: str, required: bool = True) -> Optional[str
     return m.group(1).strip()
 
 
+def _normalize_item(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text.strip()
+    # убираем типичные маркеры списков в начале строки
+    cleaned = re.sub(r"^[\-–—•·\*\u2022]+", "", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _dedup_ordered(items: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for raw in items:
+        item = _normalize_item(raw)
+        if not item:
+            continue
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 def _split(s: str) -> List[str]:
-    return [p.strip() for p in s.split(";") if p.strip()]
+    if not s:
+        return []
+    parts = re.split(r"[;\n]+", s)
+    return _dedup_ordered(parts)
 
 
 def _parse_prodclass_id(s: str) -> int:
@@ -204,7 +232,21 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
     data["PRODCLASS_SCORE_SOURCE"] = "fallback_embeddings" if used_fallback else "model_reply"
     data["EQUIPMENT_LIST"] = _split(data["EQUIPMENT_RAW"])
     data["GOODS_LIST"] = _split(data["GOODS_RAW"])
-    data["GOODS_TYPE_LIST"] = _split(data["GOODS_TYPE_RAW"])
+
+    goods_type_list = _split(data["GOODS_TYPE_RAW"])
+    goods_list = data["GOODS_LIST"]
+
+    goods_type_source = "GOODS_TYPE"
+    if not goods_type_list and goods_list:
+        # Если LLM не заполнил GOODS_TYPE, используем GOODS как запасной вариант
+        goods_type_list = list(goods_list)
+        goods_type_source = "GOODS"
+    elif goods_list:
+        # дополняем GOODS_TYPE значениями из GOODS (без дубликатов)
+        goods_type_list = _dedup_ordered(goods_type_list + goods_list)
+
+    data["GOODS_TYPE_LIST"] = goods_type_list
+    data["GOODS_TYPE_SOURCE"] = goods_type_source
     return data
 
 
