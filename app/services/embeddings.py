@@ -118,6 +118,24 @@ async def _internal_embed(text: str, *, timeout: float) -> Optional[List[float]]
 # ----------------------------
 # OpenAI — одиночный текст
 # ----------------------------
+def _extract_openai_error(response: httpx.Response) -> str:
+    """Читает тело ответа OpenAI и вытаскивает сообщение об ошибке."""
+    try:
+        data = response.json()
+    except ValueError:
+        return response.text or "unknown error"
+
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        code = error.get("code")
+        if message and code:
+            return f"{message} (code={code})"
+        if message:
+            return message
+    return str(data)
+
+
 async def openai_embed(text: str, *, timeout: float = 12.0) -> List[float]:
     """
     Получить эмбеддинг для одного текста через OpenAI REST API.
@@ -131,14 +149,32 @@ async def openai_embed(text: str, *, timeout: float = 12.0) -> List[float]:
     if DEBUG_OPENAI_LOG:
         _debug_preview([text])
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post("https://api.openai.com/v1/embeddings", headers=headers, json=payload)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(
+                "https://api.openai.com/v1/embeddings",
+                headers=headers,
+                json=payload,
+            )
+    except httpx.RequestError as ex:
+        raise RuntimeError(f"OpenAI request failed: {ex}") from ex
+
+    try:
         r.raise_for_status()
+    except httpx.HTTPStatusError as ex:
+        detail = _extract_openai_error(r)
+        raise RuntimeError(f"OpenAI returned HTTP {r.status_code}: {detail}") from ex
+
+    try:
         data = r.json()
         vec = data["data"][0]["embedding"]
-        if not isinstance(vec, list) or not vec:
-            raise RuntimeError("bad embedding payload from OpenAI")
-        return [float(x) for x in vec]
+    except (ValueError, KeyError, IndexError, TypeError) as ex:
+        raise RuntimeError("bad embedding payload from OpenAI") from ex
+
+    if not isinstance(vec, list) or not vec:
+        raise RuntimeError("bad embedding payload from OpenAI")
+
+    return [float(x) for x in vec]
 
 
 # ----------------------------
@@ -240,13 +276,28 @@ async def embed_many(texts: List[str], *, timeout: float = 12.0) -> List[List[fl
 
             # собираем эмбеддинги чанков
             chunk_vectors: List[List[float]] = []
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                for batch in _batches(expanded_texts, EMBED_BATCH_SIZE):
-                    payload = {"model": OPENAI_EMBED_MODEL, "input": batch}
-                    r = await client.post(url, headers=headers, json=payload)
-                    r.raise_for_status()
-                    data = r.json()
-                    chunk_vectors.extend([item["embedding"] for item in data["data"]])
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    for batch in _batches(expanded_texts, EMBED_BATCH_SIZE):
+                        payload = {"model": OPENAI_EMBED_MODEL, "input": batch}
+                        r = await client.post(url, headers=headers, json=payload)
+                        r.raise_for_status()
+                        data = r.json()
+                        chunk_vectors.extend([item["embedding"] for item in data["data"]])
+            except httpx.HTTPStatusError as ex:
+                detail = _extract_openai_error(ex.response)
+                log.warning(
+                    "OpenAI embed_many failed with HTTP %s: %s",
+                    ex.response.status_code,
+                    detail,
+                )
+                return [r if isinstance(r, list) else [] for r in results]
+            except httpx.RequestError as ex:
+                log.warning("OpenAI embed_many request failed: %s", ex)
+                return [r if isinstance(r, list) else [] for r in results]
+            except (ValueError, KeyError, IndexError, TypeError) as ex:
+                log.warning("OpenAI embed_many bad payload: %s", ex)
+                return [r if isinstance(r, list) else [] for r in results]
 
             # агрегируем обратно по исходным текстам (усреднение по чанкам)
             pos = 0
