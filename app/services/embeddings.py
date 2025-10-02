@@ -246,20 +246,16 @@ async def embed_many(texts: List[str], *, timeout: float = 12.0) -> List[List[fl
 
     # 2) OpenAI для тех, кто не обработан
     if OPENAI_API_KEY:
-        # Разворачиваем тексты в чанки; для OpenAI выгодно отправлять пакетами
         to_process_indices: List[int] = [i for i, v in enumerate(results) if v is None]
         if to_process_indices:
-            # Для батчинга подготовим пары (orig_idx, chunk_text)
-            expanded_indices: List[int] = []
+            # Для батчинга подготовим чанки
             expanded_texts: List[str] = []
             chunks_per_text: List[int] = []
 
             for idx in to_process_indices:
                 parts = _chunk_text(texts[idx], EMBED_MAX_CHARS)
                 chunks_per_text.append(len(parts))
-                for p in parts:
-                    expanded_indices.append(idx)
-                    expanded_texts.append(p)
+                expanded_texts.extend(parts)
 
             if DEBUG_OPENAI_LOG:
                 log.info(
@@ -269,7 +265,7 @@ async def embed_many(texts: List[str], *, timeout: float = 12.0) -> List[List[fl
                     EMBED_BATCH_SIZE,
                     OPENAI_EMBED_MODEL,
                 )
-                _debug_preview(expanded_texts[:min(len(expanded_texts), 10)])  # не спамим лог
+                _debug_preview(expanded_texts[: min(len(expanded_texts), 10)])  # не спамим лог
 
             headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
             url = "https://api.openai.com/v1/embeddings"
@@ -283,7 +279,17 @@ async def embed_many(texts: List[str], *, timeout: float = 12.0) -> List[List[fl
                         r = await client.post(url, headers=headers, json=payload)
                         r.raise_for_status()
                         data = r.json()
-                        chunk_vectors.extend([item["embedding"] for item in data["data"]])
+
+                        items = data.get("data") if isinstance(data, dict) else None
+                        if not isinstance(items, list):
+                            raise ValueError("bad embedding payload from OpenAI")
+
+                        for item in items:
+                            emb = item.get("embedding") if isinstance(item, dict) else None
+                            if not isinstance(emb, list):
+                                raise ValueError("bad embedding payload from OpenAI")
+                            chunk_vectors.append([float(x) for x in emb])
+
             except httpx.HTTPStatusError as ex:
                 detail = _extract_openai_error(ex.response)
                 log.warning(
@@ -291,23 +297,30 @@ async def embed_many(texts: List[str], *, timeout: float = 12.0) -> List[List[fl
                     ex.response.status_code,
                     detail,
                 )
-                return [r if isinstance(r, list) else [] for r in results]
             except httpx.RequestError as ex:
                 log.warning("OpenAI embed_many request failed: %s", ex)
-                return [r if isinstance(r, list) else [] for r in results]
             except (ValueError, KeyError, IndexError, TypeError) as ex:
                 log.warning("OpenAI embed_many bad payload: %s", ex)
-                return [r if isinstance(r, list) else [] for r in results]
 
-            # агрегируем обратно по исходным текстам (усреднение по чанкам)
+            # агрегируем обратно по исходным текстам (усреднение по чанкам) — даже при частичном успехе
             pos = 0
             for i, idx in enumerate(to_process_indices):
                 k = chunks_per_text[i]
+                if pos + k > len(chunk_vectors):
+                    log.warning(
+                        "OpenAI embed_many: expected %d vectors for text %d, got %d",
+                        k,
+                        idx,
+                        max(0, len(chunk_vectors) - pos),
+                    )
+                    break
+
                 if k == 1:
-                    results[idx] = [float(x) for x in chunk_vectors[pos]]
+                    results[idx] = chunk_vectors[pos]
                 else:
-                    vecs = [[float(x) for x in v] for v in chunk_vectors[pos : pos + k]]
+                    vecs = chunk_vectors[pos : pos + k]
                     results[idx] = _avg_vectors(vecs)
+
                 pos += k
 
     # 3) финал: заменяем None на пустые векторы

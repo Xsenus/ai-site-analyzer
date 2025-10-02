@@ -79,6 +79,19 @@ async def _embeddings(texts: List[str], embed_model: str) -> List[List[float]]:
     return all_vecs
 
 
+async def embed_single_text(text: str, embed_model: str) -> Optional[List[float]]:
+    """Возвращает эмбеддинг для одного текста или None, если текст пустой."""
+    if not text:
+        return None
+    payload = text.strip()
+    if not payload:
+        return None
+    vecs = await _embeddings([payload], embed_model)
+    if not vecs:
+        return None
+    return vecs[0]
+
+
 def _cosine_lists(u: List[float], v: List[float]) -> float:
     """
     Косинусная близость двух векторов без numpy.

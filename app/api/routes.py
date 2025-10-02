@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, List, Optional, cast
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.exc import ProgrammingError
 
@@ -19,6 +19,10 @@ from app.api.schemas import (
     IbMatchResponse,
     IbMatchSummary,
 )
+from app.schemas.equipment_selection import (
+    EquipmentSelectionResponse,
+    SampleTable,
+)
 from app.services.analyzer import (
     build_prompt,
     call_openai,
@@ -26,6 +30,7 @@ from app.services.analyzer import (
     enrich_by_catalog,
     MATCH_THRESHOLD_EQUIPMENT,
     MATCH_THRESHOLD_GOODS,
+    embed_single_text,
 )
 from app.models.ib_prodclass import IB_PRODCLASS
 from app.repositories import parsing_repo as repo
@@ -37,6 +42,7 @@ from app.db.tx import (
     dual_write,
 )
 from app.services.embeddings import embed_many
+from app.services.equipment_selection import compute_equipment_selection
 from app.utils.vectors import cosine_similarity, format_pgvector, parse_pgvector
 
 log = logging.getLogger("api")
@@ -100,6 +106,85 @@ def _render_ascii_table(
 @router.get("/health")
 async def health():
     return {"ok": True, "time": dt.datetime.now(dt.timezone.utc).isoformat()}
+
+
+@router.get("/v1/equipment-selection", response_model=EquipmentSelectionResponse)
+async def equipment_selection(
+    client_request_id: int = Query(..., ge=1)
+) -> EquipmentSelectionResponse:
+    """
+    Вычисляет таблицы оборудования (1way/2way/3way/all) для клиента и возвращает
+    срезы данных, чтобы сразу увидеть результат.
+    """
+    engine_opt: Optional[AsyncEngine] = get_primary_engine() or get_secondary_engine()
+    if engine_opt is None:
+        raise HTTPException(status_code=500, detail="Нет доступных подключений к БД")
+
+    log.info("[equipment-selection] start client_request_id=%s", client_request_id)
+
+    async def _action(conn):
+        return await compute_equipment_selection(conn, client_request_id)
+
+    result = await run_on_engine(engine_opt, _action)
+
+    # --- Собираем наглядные ASCII-таблицы по топ-5 записей из каждого списка ---
+    sample_tables: list[SampleTable] = []
+
+    def _append_sample(title: str, headers: list[str], rows: list[list[str]]) -> None:
+        if not rows:
+            return
+        sample_tables.append(
+            SampleTable(title=title, lines=_render_ascii_table(headers, rows))
+        )
+
+    def _format_score(value: float | None) -> str:
+        return "-" if value is None else f"{value:.4f}"
+
+    _append_sample(
+        "EQUIPMENT_1way (через prodclass)",
+        ["ID", "Название", "SCORE"],
+        [
+            [str(row.id), row.equipment_name or "-", _format_score(row.score)]
+            for row in result.equipment_1way[:5]
+        ],
+    )
+    _append_sample(
+        "EQUIPMENT_2way (через goods_type)",
+        ["ID", "Название", "SCORE"],
+        [
+            [str(row.id), row.equipment_name or "-", _format_score(row.score)]
+            for row in result.equipment_2way[:5]
+        ],
+    )
+    _append_sample(
+        "EQUIPMENT_3way (через ai_site_equipment)",
+        ["ID", "Название", "SCORE"],
+        [
+            [str(row.id), row.equipment_name or "-", _format_score(row.score)]
+            for row in result.equipment_3way[:5]
+        ],
+    )
+    _append_sample(
+        "EQUIPMENT_ALL (объединённый рейтинг)",
+        ["ID", "Название", "SCORE", "Источник"],
+        [
+            [
+                str(row.id),
+                row.equipment_name or "-", 
+                _format_score(row.score),
+                row.source,
+            ]
+            for row in result.equipment_all[:5]
+        ],
+    )
+
+    result = result.copy(update={"sample_tables": sample_tables})
+    log.info(
+        "[equipment-selection] done client_request_id=%s equipment_all=%s",
+        client_request_id,
+        len(result.equipment_all),
+    )
+    return result
 
 
 def _resolve_mode(raw: Optional[str]) -> SyncMode:
@@ -731,6 +816,45 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
     log.info("[analyze] prodclass parsed pars_id=%s id=%s score=%s",
              pars_id, prodclass_id_opt, prodclass_score_opt)
 
+    # Эмбеддинг описания сайта (для pars_site.text_vector)
+    description_text: str = str(parsed.get("DESCRIPTION") or "").strip()
+    description_vector: Optional[List[float]] = None
+    description_vec_literal: Optional[str] = None
+    description_embed_error: Optional[str] = None
+    description_embed_ms: Optional[int] = None
+
+    if description_text:
+        t_desc = dt.datetime.now()
+        try:
+            description_vector = await embed_single_text(description_text, embed_model)
+            description_embed_ms = _tick(t_desc)
+            if description_vector:
+                description_vec_literal = format_pgvector(description_vector)
+                log.info(
+                    "[analyze] description embedding pars_id=%s dim=%s took_ms=%s",
+                    pars_id,
+                    len(description_vector),
+                    description_embed_ms,
+                )
+            else:
+                log.warning(
+                    "[analyze] description embedding empty pars_id=%s took_ms=%s",
+                    pars_id,
+                    description_embed_ms,
+                )
+        except Exception as ex:
+            description_embed_ms = _tick(t_desc)
+            description_embed_error = str(ex)
+            log.error(
+                "[analyze] description embedding failed pars_id=%s took_ms=%s error=%s",
+                pars_id,
+                description_embed_ms,
+                ex,
+                exc_info=True,
+            )
+    else:
+        log.info("[analyze] description empty pars_id=%s — skip embedding", pars_id)
+
     # ---- 2) enrichment (эмбеддинги + матчинг к справочникам) ----
     t_cat = dt.datetime.now()
     goods_catalog_obj: Any = await run_on_engine(read_engine, lambda conn: repo.fetch_goods_types_catalog(conn))
@@ -774,6 +898,13 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             "goods_enriched": len(goods_enriched),
             "equip_enriched": len(equip_enriched),
         },
+        "description_embedding": {
+            "text_len": len(description_text),
+            "vector_dim": len(description_vector) if description_vector else 0,
+            "computed": bool(description_vec_literal),
+            "took_ms": description_embed_ms,
+            "error": description_embed_error,
+        },
     }
     log.info("[analyze] write phase pars_id=%s dry_run=%s mode=%s", pars_id, is_dry, mode.value)
 
@@ -785,12 +916,20 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
         added = await repo.ensure_description_column(conn)
         log.info("[analyze/write] ensure_description_column pars_id=%s added=%s", pars_id, added)
 
+        # 1а) Гарантируем колонку text_vector
+        text_vec_added = await repo.ensure_pars_text_vector_column(conn)
+        log.info(
+            "[analyze/write] ensure_pars_text_vector_column pars_id=%s added=%s",
+            pars_id,
+            text_vec_added,
+        )
+
         # 2) Гарантируем родителя в pars_site (или SKIP на secondary, если company_id NOT NULL)
         inserted_ps = await repo.ensure_pars_site_row(
             conn=conn,
             pars_id=pars_id,
             text_par=text_par,
-            description=str(parsed.get("DESCRIPTION", "")),
+            description=description_text,
         )
         if inserted_ps is True:
             log.info("[analyze/write] ensure_pars_site_row pars_id=%s inserted=True", pars_id)
@@ -798,8 +937,29 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             log.info("[analyze/write] ensure_pars_site_row pars_id=%s inserted=False", pars_id)
 
         # 3) Обновим description (если строка есть — обновится; если нет — будет False)
-        updated = await repo.update_pars_description(conn, pars_id, str(parsed.get("DESCRIPTION", "")))
+        updated = await repo.update_pars_description(conn, pars_id, description_text)
         log.info("[analyze/write] update_pars_description pars_id=%s updated=%s", pars_id, updated)
+
+        # 3а) Обновим text_vector, если удалось получить эмбеддинг, либо очистим при пустом описании
+        text_vector_action = "skip"
+        text_vector_updated = False
+        if description_vec_literal is not None:
+            text_vector_updated = await repo.update_pars_text_vector(conn, pars_id, description_vec_literal)
+            text_vector_action = "set"
+        elif not description_text:
+            text_vector_updated = await repo.update_pars_text_vector(conn, pars_id, None)
+            text_vector_action = "clear"
+        else:
+            log.info(
+                "[analyze/write] update_pars_text_vector pars_id=%s skipped (no vector)",
+                pars_id,
+            )
+        log.info(
+            "[analyze/write] update_pars_text_vector pars_id=%s action=%s updated=%s",
+            pars_id,
+            text_vector_action,
+            text_vector_updated,
+        )
 
         # 4) Жёсткая валидация prodclass
         if prodclass_id_opt is None:
@@ -833,7 +993,10 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
 
         return {
             "added_description_column": added,
+            "added_pars_text_vector_column": text_vec_added,
             "updated_pars_site_description": updated,
+            "updated_pars_site_text_vector": text_vector_updated,
+            "pars_site_text_vector_action": text_vector_action,
             "ai_site_prodclass_row_id": prodclass_row_id,
             "prodclass_score": prodclass_score_opt,
             "prodclass_score_source": parsed.get("PRODCLASS_SCORE_SOURCE"),
