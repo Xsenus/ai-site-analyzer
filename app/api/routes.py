@@ -43,6 +43,60 @@ log = logging.getLogger("api")
 router = APIRouter()
 
 
+def _render_ascii_table(
+    headers: list[str],
+    rows: list[list[str]],
+    *,
+    aligns: list[str] | None = None,
+) -> list[str]:
+    """Простая ASCII-таблица для включения в текстовый отчёт."""
+
+    if not rows:
+        widths = [len(h) for h in headers]
+    else:
+        widths = [len(h) for h in headers]
+        for row in rows:
+            for idx, cell in enumerate(row):
+                widths[idx] = max(widths[idx], len(cell))
+
+    def _format_cell(value: str, width: int, align: str) -> str:
+        if align == "right":
+            return value.rjust(width)
+        if align == "center":
+            return value.center(width)
+        return value.ljust(width)
+
+    aligns = (aligns or ["left"] * len(headers))[: len(headers)]
+    if len(aligns) < len(headers):
+        aligns = aligns + ["left"] * (len(headers) - len(aligns))
+    top_border = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+    header_line = (
+        "| "
+        + " | ".join(
+            _format_cell(str(h), widths[idx], aligns[idx]) for idx, h in enumerate(headers)
+        )
+        + " |"
+    )
+    header_sep = (
+        "|"
+        + "+".join("-" * (w + 2) for w in widths)
+        + "|"
+    )
+
+    lines = [top_border, header_line, header_sep]
+    for row in rows:
+        formatted = (
+            "| "
+            + " | ".join(
+                _format_cell(cell, widths[idx], aligns[idx]) for idx, cell in enumerate(row)
+            )
+            + " |"
+        )
+        lines.append(formatted)
+    lines.append(top_border)
+    return lines
+
+
 @router.get("/health")
 async def health():
     return {"ok": True, "time": dt.datetime.now(dt.timezone.utc).isoformat()}
@@ -421,6 +475,149 @@ async def assign_ib_matches(body: IbMatchRequest) -> IbMatchResponse:
         catalog_equipment_total=len(equip_catalog_vecs),
     )
 
+    separator = "=" * 88
+    debug_lines: list[str] = []
+    debug_lines.append(
+        f"[INFO] Найдено записей по CLIENT_ID={client_id}: "
+        f"goods_types={len(goods_rows)}, equipment={len(equip_rows)}"
+    )
+
+    if goods_rows:
+        debug_lines.append("")
+        debug_lines.append("— Связанные ai_site_goods_types.goods_type:")
+        for row in goods_rows:
+            debug_lines.append(f"   [goods_id={row['id']}] {row.get('text', '')}")
+
+    if equip_rows:
+        debug_lines.append("")
+        debug_lines.append("— Связанные ai_site_equipment.equipment:")
+        for row in equip_rows:
+            debug_lines.append(f"   [equip_id={row['id']}] {row.get('text', '')}")
+
+    debug_lines.append("")
+    debug_lines.append(
+        f"[INFO] В справочнике ib_goods_types: {len(goods_catalog_vecs)} позиций с валидными векторами."
+    )
+    debug_lines.append(
+        f"[INFO] В справочнике ib_equipment: {len(equip_catalog_vecs)} позиций с валидными векторами."
+    )
+
+    debug_lines.append("")
+    debug_lines.append(f"[EMBED] Генерируем эмбеддинги для goods_types: {len(goods_to_embed)}")
+    debug_lines.append(f"[EMBED] Генерируем эмбеддинги для equipment: {len(equip_to_embed)}")
+
+    goods_table_rows = [
+        [
+            str(item.ai_id),
+            (item.source_text or "").replace("\n", " "),
+            str(item.match_id) if item.match_id is not None else "—",
+            item.match_name or "—",
+            f"{item.score:.4f}" if item.score is not None else "—",
+            item.note or "",
+        ]
+        for item in goods_matches
+    ]
+
+    if goods_matches:
+        debug_lines.append("")
+        debug_lines.append(separator)
+        debug_lines.append("ИТОГОВОЕ СООТВЕТСТВИЕ: ТИПЫ ПРОДУКЦИИ (ai_site_goods_types → ib_goods_types)")
+        debug_lines.extend(
+            _render_ascii_table(
+                [
+                    "ai_goods_id",
+                    "ai_goods_type",
+                    "match_ib_id",
+                    "match_ib_name",
+                    "score",
+                    "note",
+                ],
+                goods_table_rows,
+                aligns=["right", "left", "right", "left", "right", "left"],
+            )
+        )
+
+    equipment_table_rows = [
+        [
+            str(item.ai_id),
+            (item.source_text or "").replace("\n", " "),
+            str(item.match_id) if item.match_id is not None else "—",
+            item.match_name or "—",
+            f"{item.score:.4f}" if item.score is not None else "—",
+            item.note or "",
+        ]
+        for item in equipment_matches
+    ]
+
+    if equipment_matches:
+        debug_lines.append("")
+        debug_lines.append(separator)
+        debug_lines.append("ИТОГОВОЕ СООТВЕТСТВИЕ: ОБОРУДОВАНИЕ (ai_site_equipment → ib_equipment)")
+        debug_lines.extend(
+            _render_ascii_table(
+                [
+                    "ai_equip_id",
+                    "ai_equipment",
+                    "match_ib_id",
+                    "match_ib_name",
+                    "score",
+                    "note",
+                ],
+                equipment_table_rows,
+                aligns=["right", "left", "right", "left", "right", "left"],
+            )
+        )
+
+    debug_lines.append("")
+    debug_lines.append(separator)
+    debug_lines.append("СВОДКА:")
+    debug_lines.append(f"- CLIENT_ID: {client_id}")
+    debug_lines.append(
+        f"- Обработано goods_types: {summary.goods_total}, обновлено: {summary.goods_updated}"
+    )
+    debug_lines.append(
+        f"- Обработано equipment:   {summary.equipment_total}, обновлено: {summary.equipment_updated}"
+    )
+    debug_lines.append(
+        f"- В ib_goods_types: {summary.catalog_goods_total} позиций с векторами"
+    )
+    debug_lines.append(
+        f"- В ib_equipment:   {summary.catalog_equipment_total} позиций с векторами"
+    )
+    debug_lines.append(separator)
+
+    if goods_matches:
+        debug_lines.append("")
+        debug_lines.append("[ПОДБОР GOODS] Наиболее релевантные соответствия:")
+        for item in goods_matches:
+            if item.match_id is not None and item.match_name and item.score is not None:
+                debug_lines.append(
+                    f"  ai_site_goods_types(id={item.ai_id}): '{item.source_text}' → "
+                    f"ib_goods_types '{item.match_name}' (score={item.score:.4f})"
+                )
+            else:
+                reason = item.note or "нет соответствия"
+                debug_lines.append(
+                    f"  ai_site_goods_types(id={item.ai_id}): '{item.source_text}' → — ({reason})"
+                )
+
+    if equipment_matches:
+        debug_lines.append("")
+        debug_lines.append("[ПОДБОР EQUIPMENT] Наиболее релевантные соответствия:")
+        for item in equipment_matches:
+            if item.match_id is not None and item.match_name and item.score is not None:
+                debug_lines.append(
+                    f"  ai_site_equipment(id={item.ai_id}): '{item.source_text}' → "
+                    f"ib_equipment '{item.match_name}' (score={item.score:.4f})"
+                )
+            else:
+                reason = item.note or "нет соответствия"
+                debug_lines.append(
+                    f"  ai_site_equipment(id={item.ai_id}): '{item.source_text}' → — ({reason})"
+                )
+
+    debug_report = "\n".join(debug_lines)
+
     duration_ms = _tick(started)
     log.info(
         "[ib-match] done client_id=%s goods=%s/%s equipment=%s/%s duration_ms=%s",
@@ -437,6 +634,7 @@ async def assign_ib_matches(body: IbMatchRequest) -> IbMatchResponse:
         goods=goods_matches,
         equipment=equipment_matches,
         summary=summary,
+        debug_report=debug_report,
         duration_ms=duration_ms,
     )
 
