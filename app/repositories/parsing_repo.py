@@ -49,6 +49,38 @@ async def ensure_description_column(conn: AsyncConnection) -> bool:
     return False
 
 
+async def ensure_pars_text_vector_column(conn: AsyncConnection) -> bool:
+    """Гарантирует наличие колонки text_vector в public.pars_site."""
+    t0 = dt.datetime.now()
+    log.info("[repo] ensure_pars_text_vector_column: check existence")
+    q = text(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='pars_site' AND column_name='text_vector';
+        """
+    )
+    res = await conn.execute(q)
+    exists = res.first() is not None
+    if exists:
+        ms = _tick(t0)
+        log.info("[repo] ensure_pars_text_vector_column: already exists took_ms=%s", ms)
+        return False
+
+    dim = int(getattr(settings, "VECTOR_DIM", 0) or 0)
+    column_type = f"vector({dim})" if dim > 0 else "vector"
+    log.info(
+        "[repo] ensure_pars_text_vector_column: adding column public.pars_site.text_vector type=%s",
+        column_type,
+    )
+    await conn.execute(
+        text(f"ALTER TABLE public.pars_site ADD COLUMN text_vector {column_type};")
+    )
+    ms = _tick(t0)
+    log.info("[repo] ensure_pars_text_vector_column: added took_ms=%s", ms)
+    return True
+
+
 async def fetch_text_par(conn: AsyncConnection, pars_id: int) -> str:
     t0 = dt.datetime.now()
     log.info("[repo] fetch_text_par: id=%s", pars_id)
@@ -74,6 +106,34 @@ async def update_pars_description(conn: AsyncConnection, pars_id: int, descripti
     ok = res.rowcount == 1
     ms = _tick(t0)
     log.info("[repo] update_pars_description: id=%s updated=%s took_ms=%s", pars_id, ok, ms)
+    return ok
+
+
+async def update_pars_text_vector(conn: AsyncConnection, pars_id: int, vec_literal: Optional[str]) -> bool:
+    """
+    Обновляет pars_site.text_vector. Если vec_literal=None — обнуляет значение.
+    vec_literal должен быть строкой в формате pgvector: "[0.1,0.2,...]".
+    """
+    t0 = dt.datetime.now()
+    action = "clear" if vec_literal is None else "set"
+    log.info(
+        "[repo] update_pars_text_vector: id=%s action=%s", pars_id, action
+    )
+    if vec_literal is None:
+        res = await conn.execute(
+            text("UPDATE public.pars_site SET text_vector = NULL WHERE id = :id;"),
+            {"id": pars_id},
+        )
+    else:
+        res = await conn.execute(
+            text(
+                "UPDATE public.pars_site SET text_vector = CAST(:vec AS vector) WHERE id = :id;"
+            ),
+            {"id": pars_id, "vec": vec_literal},
+        )
+    ok = res.rowcount == 1
+    ms = _tick(t0)
+    log.info("[repo] update_pars_text_vector: id=%s updated=%s took_ms=%s", pars_id, ok, ms)
     return ok
 
 
