@@ -18,8 +18,15 @@ from app.api.schemas import (
     IbMatchRequest,
     IbMatchResponse,
     IbMatchSummary,
+    ParsSiteInfo,
+    SitePipelineIbMatchOptions,
+    SitePipelineParseResult,
+    SitePipelineRequest,
+    SitePipelineResolved,
+    SitePipelineResponse,
 )
 from app.schemas.equipment_selection import (
+    ClientRow,
     EquipmentSelectionResponse,
     SampleTable,
 )
@@ -1233,3 +1240,195 @@ async def analyze_by_site(site: str, body: AnalyzeRequest):
 
     # Запускаем основной пайплайн ровно как для /{pars_id}
     return await _analyze_impl(pars_id, body)
+
+
+@router.post("/v1/site-pipeline", response_model=SitePipelineResponse)
+async def run_site_pipeline(body: SitePipelineRequest) -> SitePipelineResponse:
+    """Запускает полный цикл: parse-site → analyze → ib-match → equipment-selection."""
+
+    started = dt.datetime.now()
+    requested_inn = (body.inn or "").strip() or None
+    requested_site = (body.site or "").strip() or None
+    site_norm = _normalize_site(requested_site) if requested_site else None
+
+    log.info(
+        "[site-pipeline] start inn=%s site=%s site_norm=%s pars_id=%s client_id=%s",
+        requested_inn,
+        requested_site,
+        site_norm,
+        body.pars_site_id,
+        body.client_id,
+    )
+
+    primary = get_primary_engine()
+    secondary = get_secondary_engine()
+    read_engine = primary or secondary
+    if read_engine is None:
+        raise HTTPException(status_code=500, detail="Нет доступных подключений к БД")
+
+    async def _resolve(conn):
+        client_id: Optional[int] = body.client_id
+        pars_id: Optional[int] = body.pars_site_id
+        resolved_inn: Optional[str] = requested_inn
+        resolved_site_norm: Optional[str] = site_norm
+        client_row: Optional[dict] = None
+        pars_row: Optional[dict] = None
+
+        if pars_id is not None:
+            pars_row = await repo.fetch_pars_site_basic(conn, pars_id)
+            if not pars_row:
+                raise HTTPException(status_code=404, detail=f"pars_site с id={pars_id} не найден")
+            company_id = pars_row.get("company_id")
+            if client_id is None and company_id is not None:
+                try:
+                    client_id = int(company_id)
+                except (TypeError, ValueError):
+                    client_id = None
+
+        if client_id is not None:
+            client_row = await repo.fetch_client_request(conn, client_id)
+            if not client_row:
+                raise HTTPException(status_code=404, detail=f"Клиент с id={client_id} не найден")
+            resolved_inn = resolved_inn or client_row.get("inn")
+            domain_1 = client_row.get("domain_1")
+            if not resolved_site_norm and domain_1:
+                resolved_site_norm = _normalize_site(str(domain_1))
+            if pars_id is None:
+                latest = await repo.find_latest_pars_site_for_client(conn, client_id)
+                if latest:
+                    pars_row = pars_row or latest
+                    pars_id = latest.get("id") if latest.get("id") is not None else pars_id
+
+        if resolved_inn and client_row is None:
+            candidate = await repo.find_client_by_inn(conn, resolved_inn)
+            if candidate:
+                client_row = candidate
+                cid = candidate.get("id")
+                if cid is not None:
+                    try:
+                        client_id = int(cid)
+                    except (TypeError, ValueError):
+                        client_id = None
+                if not resolved_site_norm and candidate.get("domain_1"):
+                    resolved_site_norm = _normalize_site(str(candidate.get("domain_1")))
+
+        if resolved_site_norm:
+            if pars_id is None:
+                found_pars = await repo.find_pars_id_by_site(conn, resolved_site_norm)
+                if found_pars:
+                    pars_id = found_pars
+            if client_row is None:
+                candidate = await repo.find_client_by_domain(conn, resolved_site_norm)
+                if candidate:
+                    client_row = candidate
+                    cid = candidate.get("id")
+                    if cid is not None:
+                        try:
+                            client_id = int(cid)
+                        except (TypeError, ValueError):
+                            client_id = None
+                    if not resolved_inn and candidate.get("inn"):
+                        resolved_inn = candidate.get("inn")
+
+        if pars_id is not None and pars_row is None:
+            pars_row = await repo.fetch_pars_site_basic(conn, pars_id)
+            if not pars_row:
+                raise HTTPException(status_code=404, detail=f"pars_site с id={pars_id} не найден")
+            company_id = pars_row.get("company_id")
+            if client_id is None and company_id is not None:
+                try:
+                    client_id = int(company_id)
+                except (TypeError, ValueError):
+                    client_id = None
+
+        if client_id is not None and client_row is None:
+            client_row = await repo.fetch_client_request(conn, client_id)
+            if not client_row:
+                raise HTTPException(status_code=404, detail=f"Клиент с id={client_id} не найден")
+            if not resolved_inn and client_row.get("inn"):
+                resolved_inn = client_row.get("inn")
+            if not resolved_site_norm and client_row.get("domain_1"):
+                resolved_site_norm = _normalize_site(str(client_row.get("domain_1")))
+
+        if pars_id is None:
+            raise HTTPException(status_code=404, detail="pars_site не найден по переданным параметрам")
+        if client_id is None:
+            raise HTTPException(status_code=404, detail="client_id не найден по переданным параметрам")
+
+        pars_candidates = await repo.list_pars_sites_for_client(conn, int(client_id))
+
+        return {
+            "client_id": int(client_id),
+            "pars_id": int(pars_id),
+            "inn": resolved_inn,
+            "site_norm": resolved_site_norm,
+            "client": client_row,
+            "pars": pars_row,
+            "pars_candidates": pars_candidates,
+        }
+
+    try:
+        resolved = await run_on_engine(read_engine, _resolve)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("[site-pipeline] resolve error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка получения исходных данных: {exc}")
+
+    client_model = ClientRow(**resolved["client"]) if resolved.get("client") else None
+    pars_model = ParsSiteInfo(**resolved["pars"]) if resolved.get("pars") else None
+    pars_candidates = [ParsSiteInfo(**row) for row in resolved.get("pars_candidates", [])]
+
+    parse_result = SitePipelineParseResult(
+        client=client_model,
+        pars_site=pars_model,
+        pars_site_candidates=pars_candidates,
+    )
+
+    resolved_section = SitePipelineResolved(
+        requested_inn=requested_inn,
+        requested_site=requested_site,
+        normalized_site=resolved.get("site_norm"),
+        inn=resolved.get("inn"),
+        pars_site_id=resolved["pars_id"],
+        client_id=resolved["client_id"],
+    )
+
+    analyze_result: AnalyzeResponse | None = None
+    if body.run_analyze:
+        analyze_payload = (body.analyze or AnalyzeRequest()).copy(update={"company_id": resolved_section.client_id})
+        analyze_result = await _analyze_impl(resolved_section.pars_site_id, analyze_payload)
+
+    ib_match_result: IbMatchResponse | None = None
+    if body.run_ib_match:
+        ib_options = body.ib_match or SitePipelineIbMatchOptions()
+        ib_request = IbMatchRequest(
+            client_id=resolved_section.client_id,
+            reembed_if_exists=ib_options.reembed_if_exists,
+            sync_mode=ib_options.sync_mode,
+        )
+        ib_match_result = await assign_ib_matches(ib_request)
+
+    equipment_result: EquipmentSelectionResponse | None = None
+    if body.run_equipment_selection:
+        equipment_result = await equipment_selection(client_request_id=resolved_section.client_id)
+
+    duration_ms = _tick(started)
+    log.info(
+        "[site-pipeline] done client_id=%s pars_id=%s duration_ms=%s analyze=%s ib=%s equip=%s",
+        resolved_section.client_id,
+        resolved_section.pars_site_id,
+        duration_ms,
+        bool(analyze_result),
+        bool(ib_match_result),
+        bool(equipment_result),
+    )
+
+    return SitePipelineResponse(
+        resolved=resolved_section,
+        parse_site=parse_result,
+        analyze=analyze_result,
+        ib_match=ib_match_result,
+        equipment_selection=equipment_result,
+    )
+

@@ -1,6 +1,10 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Literal
+
+from typing import Any, Dict, List, Literal, Optional
+
 from pydantic import BaseModel, Field
+
+from app.schemas.equipment_selection import ClientRow, EquipmentSelectionResponse
 
 
 class AnalyzeRequest(BaseModel):
@@ -57,3 +61,51 @@ class IbMatchResponse(BaseModel):
     summary: IbMatchSummary
     debug_report: str | None = None
     duration_ms: int
+
+
+class ParsSiteInfo(BaseModel):
+    id: int
+    company_id: Optional[int] = None
+    domain_1: Optional[str] = None
+    url: Optional[str] = None
+
+
+class SitePipelineParseResult(BaseModel):
+    client: Optional[ClientRow] = None
+    pars_site: Optional[ParsSiteInfo] = None
+    pars_site_candidates: List[ParsSiteInfo] = Field(default_factory=list)
+
+
+class SitePipelineResolved(BaseModel):
+    requested_inn: Optional[str] = None
+    requested_site: Optional[str] = None
+    normalized_site: Optional[str] = None
+    inn: Optional[str] = None
+    pars_site_id: int
+    client_id: int
+
+
+class SitePipelineIbMatchOptions(BaseModel):
+    reembed_if_exists: bool = False
+    sync_mode: Literal["primary_only", "dual_write", "fallback_to_secondary"] | None = None
+
+
+class SitePipelineRequest(BaseModel):
+    inn: Optional[str] = Field(default=None)
+    site: Optional[str] = Field(default=None)
+    pars_site_id: Optional[int] = Field(default=None, ge=1)
+    client_id: Optional[int] = Field(default=None, ge=1)
+    run_analyze: bool = True
+    run_ib_match: bool = True
+    run_equipment_selection: bool = True
+    analyze: AnalyzeRequest | None = None
+    ib_match: SitePipelineIbMatchOptions | None = None
+
+
+class SitePipelineResponse(BaseModel):
+    resolved: SitePipelineResolved
+    parse_site: SitePipelineParseResult
+    analyze: AnalyzeResponse | None = None
+    ib_match: IbMatchResponse | None = None
+    equipment_selection: EquipmentSelectionResponse | None = None
+
