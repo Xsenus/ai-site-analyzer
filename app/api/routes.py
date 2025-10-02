@@ -866,9 +866,15 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
              pars_id, len(goods_catalog), len(equip_catalog), ms_cat)
 
     goods_source_list: List[str] = cast(List[str], parsed.get("GOODS_TYPE_LIST", []) or [])
+    goods_type_source: str = str(parsed.get("GOODS_TYPE_SOURCE") or "GOODS_TYPE")
     equip_source_list: List[str] = cast(List[str], parsed.get("EQUIPMENT_LIST", []) or [])
-    log.info("[analyze] sources pars_id=%s goods_src=%s equip_src=%s",
-             pars_id, len(goods_source_list), len(equip_source_list))
+    log.info(
+        "[analyze] sources pars_id=%s goods_src=%s equip_src=%s goods_origin=%s",
+        pars_id,
+        len(goods_source_list),
+        len(equip_source_list),
+        goods_type_source,
+    )
     log.debug("[analyze] sources samples pars_id=%s goods=%r equip=%r",
               pars_id, goods_source_list[:5], equip_source_list[:5])
 
@@ -897,6 +903,10 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             "equip_source": len(equip_source_list),
             "goods_enriched": len(goods_enriched),
             "equip_enriched": len(equip_enriched),
+        },
+        "source_details": {
+            "goods_type_origin": goods_type_source,
+            "goods_raw_count": len(cast(List[str], parsed.get("GOODS_LIST", []) or [])),
         },
         "description_embedding": {
             "text_len": len(description_text),
