@@ -316,7 +316,7 @@ async def fetch_equipment_catalog(conn: AsyncConnection) -> list[dict]:
         )
     else:
         q = text(
-            f'SESELECT "{id_col}" AS id, "{name_col}" AS name, NULL::text AS vec '
+            f'SELECT "{id_col}" AS id, "{name_col}" AS name, NULL::text AS vec '
             f'FROM public.{table} {company_filter} '
             f'ORDER BY "{id_col}";'
         )
@@ -329,6 +329,152 @@ async def fetch_equipment_catalog(conn: AsyncConnection) -> list[dict]:
     log.info("[repo] fetch_equipment_catalog: table=%s rows=%s took_ms=%s", table, len(out), ms)
     log.debug("[repo] fetch_equipment_catalog: sample=%r", out[:3])
     return out
+
+
+async def fetch_client_goods(conn: AsyncConnection, client_id: int) -> list[dict]:
+    t0 = dt.datetime.now()
+    log.info("[repo] fetch_client_goods: client_id=%s", client_id)
+    q = text(
+        """
+        SELECT g.id, g.goods_type, g.text_vector::text
+        FROM public.ai_site_goods_types g
+        JOIN public.pars_site ps ON g.text_par_id = ps.id
+        WHERE ps.company_id = :cid
+        ORDER BY g.id;
+        """
+    )
+    res = await conn.execute(q, {"cid": client_id})
+    rows = res.fetchall()
+    out: list[dict] = []
+    for row in rows:
+        out.append(
+            {
+                "id": int(row[0]),
+                "text": str(row[1]) if row[1] is not None else "",
+                "vec": str(row[2]) if row[2] is not None else None,
+            }
+        )
+    ms = _tick(t0)
+    log.info("[repo] fetch_client_goods: client_id=%s rows=%s took_ms=%s", client_id, len(out), ms)
+    log.debug("[repo] fetch_client_goods: sample=%r", out[:3])
+    return out
+
+
+async def fetch_client_equipment(conn: AsyncConnection, client_id: int) -> list[dict]:
+    t0 = dt.datetime.now()
+    log.info("[repo] fetch_client_equipment: client_id=%s", client_id)
+    q = text(
+        """
+        SELECT e.id, e.equipment, e.text_vector::text
+        FROM public.ai_site_equipment e
+        JOIN public.pars_site ps ON e.text_pars_id = ps.id
+        WHERE ps.company_id = :cid
+        ORDER BY e.id;
+        """
+    )
+    res = await conn.execute(q, {"cid": client_id})
+    rows = res.fetchall()
+    out: list[dict] = []
+    for row in rows:
+        out.append(
+            {
+                "id": int(row[0]),
+                "text": str(row[1]) if row[1] is not None else "",
+                "vec": str(row[2]) if row[2] is not None else None,
+            }
+        )
+    ms = _tick(t0)
+    log.info("[repo] fetch_client_equipment: client_id=%s rows=%s took_ms=%s", client_id, len(out), ms)
+    log.debug("[repo] fetch_client_equipment: sample=%r", out[:3])
+    return out
+
+
+async def update_goods_vectors(conn: AsyncConnection, items: list[tuple[int, str]]) -> int:
+    if not items:
+        return 0
+    t0 = dt.datetime.now()
+    log.info("[repo] update_goods_vectors: items=%s", len(items))
+    total = 0
+    q = text(
+        """
+        UPDATE public.ai_site_goods_types
+        SET text_vector = :vec::vector
+        WHERE id = :id;
+        """
+    )
+    for gid, vec in items:
+        res = await conn.execute(q, {"id": gid, "vec": vec})
+        if res.rowcount:
+            total += int(res.rowcount)
+    ms = _tick(t0)
+    log.info("[repo] update_goods_vectors: updated=%s took_ms=%s", total, ms)
+    return total
+
+
+async def update_equipment_vectors(conn: AsyncConnection, items: list[tuple[int, str]]) -> int:
+    if not items:
+        return 0
+    t0 = dt.datetime.now()
+    log.info("[repo] update_equipment_vectors: items=%s", len(items))
+    total = 0
+    q = text(
+        """
+        UPDATE public.ai_site_equipment
+        SET text_vector = :vec::vector
+        WHERE id = :id;
+        """
+    )
+    for eid, vec in items:
+        res = await conn.execute(q, {"id": eid, "vec": vec})
+        if res.rowcount:
+            total += int(res.rowcount)
+    ms = _tick(t0)
+    log.info("[repo] update_equipment_vectors: updated=%s took_ms=%s", total, ms)
+    return total
+
+
+async def update_goods_matches(conn: AsyncConnection, items: list[tuple[int, int, float]]) -> int:
+    if not items:
+        return 0
+    t0 = dt.datetime.now()
+    log.info("[repo] update_goods_matches: items=%s", len(items))
+    total = 0
+    q = text(
+        """
+        UPDATE public.ai_site_goods_types
+        SET goods_type_ID = :match_id, goods_types_score = :score
+        WHERE id = :id;
+        """
+    )
+    for gid, match_id, score in items:
+        res = await conn.execute(q, {"id": gid, "match_id": match_id, "score": score})
+        if res.rowcount:
+            total += int(res.rowcount)
+    ms = _tick(t0)
+    log.info("[repo] update_goods_matches: updated=%s took_ms=%s", total, ms)
+    return total
+
+
+async def update_equipment_matches(conn: AsyncConnection, items: list[tuple[int, int, float]]) -> int:
+    if not items:
+        return 0
+    t0 = dt.datetime.now()
+    log.info("[repo] update_equipment_matches: items=%s", len(items))
+    total = 0
+    q = text(
+        """
+        UPDATE public.ai_site_equipment
+        SET equipment_ID = :match_id, equipment_score = :score
+        WHERE id = :id;
+        """
+    )
+    for eid, match_id, score in items:
+        res = await conn.execute(q, {"id": eid, "match_id": match_id, "score": score})
+        if res.rowcount:
+            total += int(res.rowcount)
+    ms = _tick(t0)
+    log.info("[repo] update_equipment_matches: updated=%s took_ms=%s", total, ms)
+    return total
 
 
 # ---------- inserts (enriched) ----------

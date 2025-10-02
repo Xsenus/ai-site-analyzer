@@ -11,7 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.exc import ProgrammingError
 
 from app.config import settings
-from app.api.schemas import AnalyzeRequest, AnalyzeResponse
+from app.api.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    IbMatchItem,
+    IbMatchRequest,
+    IbMatchResponse,
+    IbMatchSummary,
+)
 from app.services.analyzer import (
     build_prompt,
     call_openai,
@@ -27,7 +34,10 @@ from app.db.tx import (
     get_primary_engine,
     get_secondary_engine,
     run_on_engine,
+    dual_write,
 )
+from app.services.embeddings import embed_many
+from app.utils.vectors import cosine_similarity, format_pgvector, parse_pgvector
 
 log = logging.getLogger("api")
 router = APIRouter()
@@ -118,6 +128,317 @@ def _normalize_site(raw: str) -> str:
         pass
 
     return host
+
+
+# ======================
+# Присвоение справочников IB
+# ======================
+@router.post("/v1/ib-match", response_model=IbMatchResponse)
+async def assign_ib_matches(body: IbMatchRequest) -> IbMatchResponse:
+    started = dt.datetime.now()
+    client_id = body.client_id
+    mode = _resolve_mode(getattr(body, "sync_mode", None))
+
+    log.info(
+        "[ib-match] start client_id=%s mode=%s reembed=%s",
+        client_id,
+        mode.value,
+        body.reembed_if_exists,
+    )
+
+    primary = get_primary_engine()
+    secondary = get_secondary_engine()
+    read_engine = primary or secondary
+    if read_engine is None:
+        log.error("[ib-match] no DB engines available client_id=%s", client_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Нет доступных подключений к БД (primary/secondary пустые)",
+        )
+
+    try:
+        goods_rows: List[dict] = await run_on_engine(
+            read_engine, lambda conn: repo.fetch_client_goods(conn, client_id)
+        )
+        equip_rows: List[dict] = await run_on_engine(
+            read_engine, lambda conn: repo.fetch_client_equipment(conn, client_id)
+        )
+        goods_catalog = await run_on_engine(read_engine, lambda conn: repo.fetch_goods_types_catalog(conn))
+        equip_catalog = await run_on_engine(read_engine, lambda conn: repo.fetch_equipment_catalog(conn))
+    except Exception as exc:
+        log.error("[ib-match] DB read error client_id=%s: %s", client_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ошибка чтения БД: {exc}")
+
+    log.info(
+        "[ib-match] fetched client_id=%s goods=%s equipment=%s catalog_goods=%s catalog_equipment=%s",
+        client_id,
+        len(goods_rows),
+        len(equip_rows),
+        len(goods_catalog),
+        len(equip_catalog),
+    )
+
+    goods_catalog_vecs = [
+        (item["id"], item["name"], parse_pgvector(item.get("vec"))) for item in goods_catalog
+    ]
+    goods_catalog_vecs = [
+        (gid, name, vec)
+        for gid, name, vec in goods_catalog_vecs
+        if isinstance(vec, list) and vec
+    ]
+
+    equip_catalog_vecs = [
+        (item["id"], item["name"], parse_pgvector(item.get("vec"))) for item in equip_catalog
+    ]
+    equip_catalog_vecs = [
+        (eid, name, vec)
+        for eid, name, vec in equip_catalog_vecs
+        if isinstance(vec, list) and vec
+    ]
+
+    goods_map = {row["id"]: row for row in goods_rows}
+    equip_map = {row["id"]: row for row in equip_rows}
+
+    goods_to_embed = []
+    for row in goods_rows:
+        vec = parse_pgvector(row.get("vec"))
+        if body.reembed_if_exists or not vec:
+            text = (row.get("text") or "").strip()
+            if text:
+                goods_to_embed.append((row["id"], text))
+
+    equip_to_embed = []
+    for row in equip_rows:
+        vec = parse_pgvector(row.get("vec"))
+        if body.reembed_if_exists or not vec:
+            text = (row.get("text") or "").strip()
+            if text:
+                equip_to_embed.append((row["id"], text))
+
+    goods_embedded = 0
+    equipment_embedded = 0
+
+    if goods_to_embed:
+        texts = [text for _, text in goods_to_embed]
+        log.info("[ib-match] embedding goods items=%s", len(texts))
+        try:
+            vectors = await embed_many(texts, timeout=settings.AI_SEARCH_TIMEOUT or 12.0)
+        except Exception as exc:
+            log.error("[ib-match] goods embedding failed client_id=%s: %s", client_id, exc, exc_info=True)
+            raise HTTPException(status_code=502, detail="Не удалось получить эмбеддинги для goods_types")
+
+        goods_updates: List[tuple[int, str]] = []
+        for (gid, _), vec in zip(goods_to_embed, vectors):
+            if vec:
+                vec_str = format_pgvector(vec)
+                goods_updates.append((gid, vec_str))
+                goods_map[gid]["vec"] = vec_str
+        goods_embedded = len(goods_updates)
+
+        if goods_updates:
+            try:
+                await dual_write(lambda conn: repo.update_goods_vectors(conn, goods_updates), mode=mode)
+            except Exception as exc:
+                log.error("[ib-match] update goods vectors failed client_id=%s: %s", client_id, exc, exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Ошибка сохранения эмбеддингов goods_types: {exc}")
+
+    if equip_to_embed:
+        texts = [text for _, text in equip_to_embed]
+        log.info("[ib-match] embedding equipment items=%s", len(texts))
+        try:
+            vectors = await embed_many(texts, timeout=settings.AI_SEARCH_TIMEOUT or 12.0)
+        except Exception as exc:
+            log.error("[ib-match] equipment embedding failed client_id=%s: %s", client_id, exc, exc_info=True)
+            raise HTTPException(status_code=502, detail="Не удалось получить эмбеддинги для equipment")
+
+        equip_updates: List[tuple[int, str]] = []
+        for (eid, _), vec in zip(equip_to_embed, vectors):
+            if vec:
+                vec_str = format_pgvector(vec)
+                equip_updates.append((eid, vec_str))
+                equip_map[eid]["vec"] = vec_str
+        equipment_embedded = len(equip_updates)
+
+        if equip_updates:
+            try:
+                await dual_write(lambda conn: repo.update_equipment_vectors(conn, equip_updates), mode=mode)
+            except Exception as exc:
+                log.error("[ib-match] update equipment vectors failed client_id=%s: %s", client_id, exc, exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Ошибка сохранения эмбеддингов equipment: {exc}")
+
+    goods_matches: List[IbMatchItem] = []
+    goods_updates_db: List[tuple[int, int, float]] = []
+
+    for row in goods_rows:
+        vec = parse_pgvector(row.get("vec"))
+        if not vec:
+            goods_matches.append(
+                IbMatchItem(
+                    ai_id=row["id"],
+                    source_text=row.get("text") or "",
+                    match_id=None,
+                    match_name=None,
+                    score=None,
+                    note="Нет вектора — пропуск",
+                )
+            )
+            continue
+
+        best_id: Optional[int] = None
+        best_name: Optional[str] = None
+        best_score = -1.0
+
+        for ib_id, ib_name, ib_vec in goods_catalog_vecs:
+            score = cosine_similarity(vec, ib_vec)
+            if score > best_score:
+                best_id = ib_id
+                best_name = ib_name
+                best_score = score
+
+        if best_id is None:
+            goods_matches.append(
+                IbMatchItem(
+                    ai_id=row["id"],
+                    source_text=row.get("text") or "",
+                    match_id=None,
+                    match_name=None,
+                    score=None,
+                    note="Нет кандидатов в справочнике",
+                )
+            )
+            continue
+
+        goods_matches.append(
+            IbMatchItem(
+                ai_id=row["id"],
+                source_text=row.get("text") or "",
+                match_id=best_id,
+                match_name=best_name,
+                score=round(best_score, 4),
+                note=None,
+            )
+        )
+        goods_updates_db.append((row["id"], best_id, round(best_score, 2)))
+
+    equipment_matches: List[IbMatchItem] = []
+    equip_updates_db: List[tuple[int, int, float]] = []
+
+    for row in equip_rows:
+        vec = parse_pgvector(row.get("vec"))
+        if not vec:
+            equipment_matches.append(
+                IbMatchItem(
+                    ai_id=row["id"],
+                    source_text=row.get("text") or "",
+                    match_id=None,
+                    match_name=None,
+                    score=None,
+                    note="Нет вектора — пропуск",
+                )
+            )
+            continue
+
+        best_id: Optional[int] = None
+        best_name: Optional[str] = None
+        best_score = -1.0
+
+        for ib_id, ib_name, ib_vec in equip_catalog_vecs:
+            score = cosine_similarity(vec, ib_vec)
+            if score > best_score:
+                best_id = ib_id
+                best_name = ib_name
+                best_score = score
+
+        if best_id is None:
+            equipment_matches.append(
+                IbMatchItem(
+                    ai_id=row["id"],
+                    source_text=row.get("text") or "",
+                    match_id=None,
+                    match_name=None,
+                    score=None,
+                    note="Нет кандидатов в справочнике",
+                )
+            )
+            continue
+
+        equipment_matches.append(
+            IbMatchItem(
+                ai_id=row["id"],
+                source_text=row.get("text") or "",
+                match_id=best_id,
+                match_name=best_name,
+                score=round(best_score, 4),
+                note=None,
+            )
+        )
+        equip_updates_db.append((row["id"], best_id, round(best_score, 2)))
+
+    if goods_updates_db:
+        try:
+            await dual_write(lambda conn: repo.update_goods_matches(conn, goods_updates_db), mode=mode)
+        except Exception as exc:
+            log.error("[ib-match] update goods matches failed client_id=%s: %s", client_id, exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Ошибка сохранения соответствий goods_types: {exc}")
+
+    if equip_updates_db:
+        try:
+            await dual_write(lambda conn: repo.update_equipment_matches(conn, equip_updates_db), mode=mode)
+        except Exception as exc:
+            log.error("[ib-match] update equipment matches failed client_id=%s: %s", client_id, exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Ошибка сохранения соответствий equipment: {exc}")
+
+    for item in goods_matches:
+        if item.match_id is not None and item.score is not None:
+            log.info(
+                "[ib-match] goods id=%s '%s' -> ib_id=%s '%s' score=%.4f",
+                item.ai_id,
+                _clip(item.source_text),
+                item.match_id,
+                _clip(item.match_name or ""),
+                item.score,
+            )
+
+    for item in equipment_matches:
+        if item.match_id is not None and item.score is not None:
+            log.info(
+                "[ib-match] equipment id=%s '%s' -> ib_id=%s '%s' score=%.4f",
+                item.ai_id,
+                _clip(item.source_text),
+                item.match_id,
+                _clip(item.match_name or ""),
+                item.score,
+            )
+
+    summary = IbMatchSummary(
+        goods_total=len(goods_rows),
+        goods_updated=len(goods_updates_db),
+        goods_embedded=goods_embedded,
+        equipment_total=len(equip_rows),
+        equipment_updated=len(equip_updates_db),
+        equipment_embedded=equipment_embedded,
+        catalog_goods_total=len(goods_catalog_vecs),
+        catalog_equipment_total=len(equip_catalog_vecs),
+    )
+
+    duration_ms = _tick(started)
+    log.info(
+        "[ib-match] done client_id=%s goods=%s/%s equipment=%s/%s duration_ms=%s",
+        client_id,
+        summary.goods_updated,
+        summary.goods_total,
+        summary.equipment_updated,
+        summary.equipment_total,
+        duration_ms,
+    )
+
+    return IbMatchResponse(
+        client_id=client_id,
+        goods=goods_matches,
+        equipment=equipment_matches,
+        summary=summary,
+        duration_ms=duration_ms,
+    )
 
 
 # ======================
