@@ -151,13 +151,16 @@ async def ensure_pars_site_row(
     pars_id: int,
     text_par: str,
     description: str,
+    *,
+    company_id: Optional[int] = None,
 ) -> EnsureParsSiteRowResult:
     """
     Идемпотентное обеспечение наличия строки в public.pars_site для данного id.
     Стратегия «безопасного зеркалирования»:
       1) UPDATE
-      2) Если строки нет — проверяем company_id: если NOT NULL без DEFAULT, пропускаем INSERT.
-         Иначе INSERT (id, text_par, description) + ON CONFLICT UPDATE description.
+      2) Если строки нет — проверяем company_id: если NOT NULL без DEFAULT,
+         то требуется явный company_id (например, из тела запроса).
+         Иначе INSERT (id, text_par, description[, company_id]) + ON CONFLICT UPDATE description.
     Возвращает EnsureParsSiteRowResult со статусом:
         * "updated"  — строка уже существовала;
         * "inserted" — строка была добавлена;
@@ -193,7 +196,9 @@ async def ensure_pars_site_row(
         company_nullable = (str(is_nullable).upper() == "YES")
         company_has_default = (col_default is not None)
 
-    if not company_nullable and not company_has_default:
+    requires_company = (not company_nullable and not company_has_default)
+
+    if requires_company and company_id is None:
         took = _tick(t0)
         reason = (
             "pars_site.company_id is NOT NULL w/o DEFAULT; mirror requires company mapping"
@@ -206,15 +211,30 @@ async def ensure_pars_site_row(
         )
         return EnsureParsSiteRowResult(status="skipped", reason=reason)
 
-    await conn.execute(
-        text("""
-            INSERT INTO public.pars_site (id, text_par, description)
-            VALUES (:id, :tp, :d)
+    columns = ["id", "text_par", "description"]
+    values = [":id", ":tp", ":d"]
+    params = {"id": pars_id, "tp": text_par, "d": description}
+
+    if company_id is not None:
+        columns.append("company_id")
+        values.append(":cid")
+        params["cid"] = company_id
+        log.info(
+            "[repo] ensure_pars_site_row: id=%s using company_id=%s for insert",
+            pars_id,
+            company_id,
+        )
+
+    query = text(
+        """
+            INSERT INTO public.pars_site ({columns})
+            VALUES ({values})
             ON CONFLICT (id) DO UPDATE
             SET description = EXCLUDED.description
-        """),
-        {"id": pars_id, "tp": text_par, "d": description},
+        """.format(columns=", ".join(columns), values=", ".join(values))
     )
+
+    await conn.execute(query, params)
     took = _tick(t0)
     log.info("[repo] ensure_pars_site_row: id=%s inserted=True took_ms=%s", pars_id, took)
     return EnsureParsSiteRowResult(status="inserted")
