@@ -720,3 +720,170 @@ async def find_pars_id_by_site(conn: AsyncConnection, site_or_host: str) -> Opti
     r2 = await conn.execute(q2, {"h": host})
     row2 = r2.first()
     return int(row2[0]) if row2 and row2[0] else None
+
+
+async def fetch_pars_site_basic(conn: AsyncConnection, pars_id: int) -> Optional[dict]:
+    """Возвращает базовую информацию о pars_site по идентификатору."""
+
+    t0 = dt.datetime.now()
+    log.info("[repo] fetch_pars_site_basic: pars_id=%s", pars_id)
+    query = text(
+        """
+        SELECT id, company_id, domain_1, url
+        FROM public.pars_site
+        WHERE id = :pid
+        LIMIT 1;
+        """
+    )
+    res = await conn.execute(query, {"pid": pars_id})
+    row = res.mappings().first()
+    ms = _tick(t0)
+    if row:
+        data = dict(row)
+        log.info("[repo] fetch_pars_site_basic: pars_id=%s found company_id=%s took_ms=%s", pars_id, data.get("company_id"), ms)
+        return data
+    log.warning("[repo] fetch_pars_site_basic: pars_id=%s not_found took_ms=%s", pars_id, ms)
+    return None
+
+
+async def find_latest_pars_site_for_client(conn: AsyncConnection, client_id: int) -> Optional[dict]:
+    """Возвращает последнюю запись pars_site для указанного клиента (по id DESC)."""
+
+    t0 = dt.datetime.now()
+    log.info("[repo] find_latest_pars_site_for_client: client_id=%s", client_id)
+    query = text(
+        """
+        SELECT id, company_id, domain_1, url
+        FROM public.pars_site
+        WHERE company_id = :cid
+        ORDER BY id DESC
+        LIMIT 1;
+        """
+    )
+    res = await conn.execute(query, {"cid": client_id})
+    row = res.mappings().first()
+    ms = _tick(t0)
+    if row:
+        data = dict(row)
+        log.info("[repo] find_latest_pars_site_for_client: client_id=%s pars_id=%s took_ms=%s", client_id, data.get("id"), ms)
+        return data
+    log.warning("[repo] find_latest_pars_site_for_client: client_id=%s not_found took_ms=%s", client_id, ms)
+    return None
+
+
+async def list_pars_sites_for_client(conn: AsyncConnection, client_id: int, *, limit: int = 50) -> list[dict]:
+    """Возвращает несколько pars_site для клиента (по убыванию id)."""
+
+    t0 = dt.datetime.now()
+    log.info("[repo] list_pars_sites_for_client: client_id=%s limit=%s", client_id, limit)
+    query = text(
+        """
+        SELECT id, company_id, domain_1, url
+        FROM public.pars_site
+        WHERE company_id = :cid
+        ORDER BY id DESC
+        LIMIT :limit;
+        """
+    )
+    res = await conn.execute(query, {"cid": client_id, "limit": max(1, limit)})
+    rows = [dict(row) for row in res.mappings().all()]
+    ms = _tick(t0)
+    log.info(
+        "[repo] list_pars_sites_for_client: client_id=%s rows=%s took_ms=%s",
+        client_id,
+        len(rows),
+        ms,
+    )
+    return rows
+
+
+async def fetch_client_request(conn: AsyncConnection, client_id: int) -> Optional[dict]:
+    """Возвращает информацию о записи clients_requests."""
+
+    t0 = dt.datetime.now()
+    log.info("[repo] fetch_client_request: client_id=%s", client_id)
+    query = text(
+        """
+        SELECT id, company_name, inn, domain_1, started_at, ended_at
+        FROM public.clients_requests
+        WHERE id = :cid
+        LIMIT 1;
+        """
+    )
+    res = await conn.execute(query, {"cid": client_id})
+    row = res.mappings().first()
+    ms = _tick(t0)
+    if row:
+        data = dict(row)
+        log.info("[repo] fetch_client_request: client_id=%s found inn=%s took_ms=%s", client_id, data.get("inn"), ms)
+        return data
+    log.warning("[repo] fetch_client_request: client_id=%s not_found took_ms=%s", client_id, ms)
+    return None
+
+
+async def find_client_by_inn(conn: AsyncConnection, inn: str) -> Optional[dict]:
+    """Ищет клиента в clients_requests по ИНН."""
+
+    inn_norm = (inn or "").strip()
+    if not inn_norm:
+        return None
+
+    t0 = dt.datetime.now()
+    log.info("[repo] find_client_by_inn: inn=%s", inn_norm)
+    query = text(
+        """
+        SELECT id, company_name, inn, domain_1, started_at, ended_at
+        FROM public.clients_requests
+        WHERE inn = :inn
+        ORDER BY id DESC
+        LIMIT 1;
+        """
+    )
+    res = await conn.execute(query, {"inn": inn_norm})
+    row = res.mappings().first()
+    ms = _tick(t0)
+    if row:
+        data = dict(row)
+        log.info(
+            "[repo] find_client_by_inn: inn=%s client_id=%s took_ms=%s",
+            inn_norm,
+            data.get("id"),
+            ms,
+        )
+        return data
+    log.warning("[repo] find_client_by_inn: inn=%s not_found took_ms=%s", inn_norm, ms)
+    return None
+
+
+async def find_client_by_domain(conn: AsyncConnection, domain: str) -> Optional[dict]:
+    """Ищет клиента в clients_requests по домену (без www)."""
+
+    host = (domain or "").strip().lower()
+    if not host:
+        return None
+
+    t0 = dt.datetime.now()
+    log.info("[repo] find_client_by_domain: domain=%s", host)
+    query = text(
+        """
+        SELECT id, company_name, inn, domain_1, started_at, ended_at
+        FROM public.clients_requests
+        WHERE lower(regexp_replace(domain_1, '^www\\.', '')) = :domain
+        ORDER BY id DESC
+        LIMIT 1;
+        """
+    )
+    res = await conn.execute(query, {"domain": host})
+    row = res.mappings().first()
+    ms = _tick(t0)
+    if row:
+        data = dict(row)
+        log.info(
+            "[repo] find_client_by_domain: domain=%s client_id=%s took_ms=%s",
+            host,
+            data.get("id"),
+            ms,
+        )
+        return data
+    log.warning("[repo] find_client_by_domain: domain=%s not_found took_ms=%s", host, ms)
+    return None
