@@ -8,6 +8,7 @@ from typing import Any, Optional, Iterable, Literal
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 
@@ -234,7 +235,29 @@ async def ensure_pars_site_row(
         """.format(columns=", ".join(columns), values=", ".join(values))
     )
 
-    await conn.execute(query, params)
+    try:
+        await conn.execute(query, params)
+    except IntegrityError as exc:
+        sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        took = _tick(t0)
+        if sqlstate == "23503":
+            cid_suffix = f"={company_id}" if company_id is not None else ""
+            reason = f"foreign key violation for pars_site.company_id{cid_suffix}"
+            log.warning(
+                "[repo] ensure_pars_site_row: id=%s insert skipped due to FK constraint took_ms=%s",
+                pars_id,
+                took,
+            )
+            log.debug("[repo] ensure_pars_site_row: id=%s fk error=%s", pars_id, exc)
+            return EnsureParsSiteRowResult(status="skipped", reason=reason)
+        log.error(
+            "[repo] ensure_pars_site_row: id=%s insert failed integrity error took_ms=%s error=%s",
+            pars_id,
+            took,
+            exc,
+        )
+        raise
+
     took = _tick(t0)
     log.info("[repo] ensure_pars_site_row: id=%s inserted=True took_ms=%s", pars_id, took)
     return EnsureParsSiteRowResult(status="inserted")

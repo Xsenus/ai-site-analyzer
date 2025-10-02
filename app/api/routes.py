@@ -48,6 +48,8 @@ from app.db.tx import (
     run_on_engine,
     dual_write,
 )
+from app.db.parsing import ping_parsing
+from app.db.postgres import ping_postgres
 from app.services.embeddings import embed_many
 from app.services.equipment_selection import compute_equipment_selection
 from app.utils.vectors import cosine_similarity, format_pgvector, parse_pgvector
@@ -111,8 +113,32 @@ def _render_ascii_table(
 
 
 @router.get("/health")
-async def health():
-    return {"ok": True, "time": dt.datetime.now(dt.timezone.utc).isoformat()}
+async def health() -> Dict[str, Any]:
+    """Расширенный health-check, пингующий обе БД."""
+
+    try:
+        parsing_ok = await ping_parsing()
+    except Exception as exc:  # pragma: no cover - защитный лог
+        log.error("Health ping_parsing failed: %s", exc)
+        parsing_ok = False
+
+    try:
+        postgres_ok = await ping_postgres()
+    except Exception as exc:  # pragma: no cover - защитный лог
+        log.error("Health ping_postgres failed: %s", exc)
+        postgres_ok = False
+
+    connections = {
+        "parsing_data": parsing_ok,
+        "postgres": postgres_ok,
+    }
+    ok = all(connections.values()) if connections else False
+
+    return {
+        "ok": ok,
+        "time": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "connections": connections,
+    }
 
 
 @router.get("/v1/equipment-selection", response_model=EquipmentSelectionResponse)

@@ -23,8 +23,8 @@ from app.config import settings
 from app.api.routes import router as api_router  # ваши /v1/... маршруты
 
 # БД: две базы с ленивой инициализацией
-from app.db.parsing import get_parsing_engine, ping_parsing
-from app.db.postgres import get_postgres_engine, ping_postgres
+from app.db.parsing import get_parsing_engine
+from app.db.postgres import get_postgres_engine
 
 # <<< ВАЖНО: импортируем схемы и логику на уровне модуля, чтобы Pydantic видел типы >>>
 from app.schemas.ai_search import AiSearchIn, AiEmbeddingOut
@@ -164,32 +164,6 @@ def create_app() -> FastAPI:
     @app.post("/")
     async def _compat_root(body: AiSearchIn):
         return await _ai_search_alias(body)
-
-    # Корневой health для всего сервиса (пингует обе БД, если они сконфигурированы)
-    @app.get("/health")
-    async def health():
-        """
-        Healthcheck пингует обе базы.
-        ok=true только если доступны все, для которых заданы DSN.
-        """
-        try:
-            parsing_ok = await ping_parsing()
-        except Exception as e:
-            log.error("Health ping_parsing failed: %s", e)
-            parsing_ok = False
-
-        try:
-            postgres_ok = await ping_postgres()
-        except Exception as e:
-            log.error("Health ping_postgres failed: %s", e)
-            postgres_ok = False
-
-        results = {
-            "parsing_data": parsing_ok,
-            "postgres": postgres_ok,
-        }
-        ok = all(v for v in results.values()) if results else False
-        return {"ok": ok, "connections": results}
 
     return app
 
