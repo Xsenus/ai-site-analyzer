@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Body, Query
@@ -935,65 +935,89 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
         )
 
         # 2) Гарантируем родителя в pars_site (или SKIP на secondary, если company_id NOT NULL)
-        inserted_ps = await repo.ensure_pars_site_row(
+        pars_site_result = await repo.ensure_pars_site_row(
             conn=conn,
             pars_id=pars_id,
             text_par=text_par,
             description=description_text,
         )
-        if inserted_ps is True:
-            log.info("[analyze/write] ensure_pars_site_row pars_id=%s inserted=True", pars_id)
-        else:
-            log.info("[analyze/write] ensure_pars_site_row pars_id=%s inserted=False", pars_id)
+        log.info(
+            "[analyze/write] ensure_pars_site_row pars_id=%s status=%s",
+            pars_id,
+            pars_site_result.status,
+        )
+        if pars_site_result.status == "skipped":
+            log.warning(
+                "[analyze/write] pars_site insert skipped pars_id=%s reason=%s",
+                pars_id,
+                pars_site_result.reason,
+            )
 
-        # 3) Обновим description (если строка есть — обновится; если нет — будет False)
-        updated = await repo.update_pars_description(conn, pars_id, description_text)
-        log.info("[analyze/write] update_pars_description pars_id=%s updated=%s", pars_id, updated)
-
-        # 3а) Обновим text_vector, если удалось получить эмбеддинг, либо очистим при пустом описании
+        updated = False
         text_vector_action = "skip"
         text_vector_updated = False
-        if description_vec_literal is not None:
-            text_vector_updated = await repo.update_pars_text_vector(conn, pars_id, description_vec_literal)
-            text_vector_action = "set"
-        elif not description_text:
-            text_vector_updated = await repo.update_pars_text_vector(conn, pars_id, None)
-            text_vector_action = "clear"
-        else:
+        prodclass_row_id: Optional[int] = None
+        eq_rows: List[Tuple[int, str]] = []
+        gt_rows: List[Tuple[int, str]] = []
+
+        if pars_site_result.status != "skipped":
+            # 3) Обновим description (если строка есть — обновится; если нет — будет False)
+            updated = await repo.update_pars_description(conn, pars_id, description_text)
+            log.info("[analyze/write] update_pars_description pars_id=%s updated=%s", pars_id, updated)
+
+            # 3а) Обновим text_vector, если удалось получить эмбеддинг, либо очистим при пустом описании
+            if description_vec_literal is not None:
+                text_vector_updated = await repo.update_pars_text_vector(conn, pars_id, description_vec_literal)
+                text_vector_action = "set"
+            elif not description_text:
+                text_vector_updated = await repo.update_pars_text_vector(conn, pars_id, None)
+                text_vector_action = "clear"
+            else:
+                log.info(
+                    "[analyze/write] update_pars_text_vector pars_id=%s skipped (no vector)",
+                    pars_id,
+                )
             log.info(
-                "[analyze/write] update_pars_text_vector pars_id=%s skipped (no vector)",
+                "[analyze/write] update_pars_text_vector pars_id=%s action=%s updated=%s",
                 pars_id,
+                text_vector_action,
+                text_vector_updated,
             )
-        log.info(
-            "[analyze/write] update_pars_text_vector pars_id=%s action=%s updated=%s",
-            pars_id,
-            text_vector_action,
-            text_vector_updated,
-        )
 
-        # 4) Жёсткая валидация prodclass
-        if prodclass_id_opt is None:
-            log.error("[analyze/write] prodclass_id missing pars_id=%s", pars_id)
-            raise ValueError("PRODCLASS отсутствует или не является целым числом")
-        if prodclass_score_opt is None:
-            log.error("[analyze/write] prodclass_score missing pars_id=%s", pars_id)
-            raise ValueError("PRODCLASS_SCORE отсутствует или не является числом")
+            # 4) Жёсткая валидация prodclass
+            if prodclass_id_opt is None:
+                log.error("[analyze/write] prodclass_id missing pars_id=%s", pars_id)
+                raise ValueError("PRODCLASS отсутствует или не является целым числом")
+            if prodclass_score_opt is None:
+                log.error("[analyze/write] prodclass_score missing pars_id=%s", pars_id)
+                raise ValueError("PRODCLASS_SCORE отсутствует или не является числом")
 
-        # 5) prodclass
-        prodclass_row_id = await repo.insert_ai_site_prodclass(
-            conn, pars_id, prodclass_id_opt, float(prodclass_score_opt)
-        )
-        log.info("[analyze/write] insert_ai_site_prodclass pars_id=%s row_id=%s id=%s score=%s",
-                 pars_id, prodclass_row_id, prodclass_id_opt, prodclass_score_opt)
+            # 5) prodclass
+            prodclass_row_id = await repo.insert_ai_site_prodclass(
+                conn, pars_id, prodclass_id_opt, float(prodclass_score_opt)
+            )
+            log.info(
+                "[analyze/write] insert_ai_site_prodclass pars_id=%s row_id=%s id=%s score=%s",
+                pars_id,
+                prodclass_row_id,
+                prodclass_id_opt,
+                prodclass_score_opt,
+            )
 
-        # 6) enriched вставки
-        eq_rows = await repo.insert_ai_site_equipment_enriched(conn, pars_id, equip_enriched)
-        log.info("[analyze/write] insert_ai_site_equipment_enriched pars_id=%s inserted=%s",
-                 pars_id, len(eq_rows))
+            # 6) enriched вставки
+            eq_rows = await repo.insert_ai_site_equipment_enriched(conn, pars_id, equip_enriched)
+            log.info(
+                "[analyze/write] insert_ai_site_equipment_enriched pars_id=%s inserted=%s",
+                pars_id,
+                len(eq_rows),
+            )
 
-        gt_rows = await repo.insert_ai_site_goods_types_enriched(conn, pars_id, goods_enriched)
-        log.info("[analyze/write] insert_ai_site_goods_types_enriched pars_id=%s inserted=%s",
-                 pars_id, len(gt_rows))
+            gt_rows = await repo.insert_ai_site_goods_types_enriched(conn, pars_id, goods_enriched)
+            log.info(
+                "[analyze/write] insert_ai_site_goods_types_enriched pars_id=%s inserted=%s",
+                pars_id,
+                len(gt_rows),
+            )
 
         equip_rows_fmt = [{"id": rid, "equipment": name} for rid, name in (eq_rows or [])]
         goods_rows_fmt = [{"id": rid, "goods_type": name} for rid, name in (gt_rows or [])]
@@ -1012,6 +1036,9 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             "prodclass_score_source": parsed.get("PRODCLASS_SCORE_SOURCE"),
             "equipment_rows": equip_rows_fmt,
             "goods_type_rows": goods_rows_fmt,
+            "pars_site_status": pars_site_result.status,
+            "pars_site_skip_reason": pars_site_result.reason,
+            "mirror_skipped": (pars_site_result.status == "skipped"),
         }
 
     try:
@@ -1053,10 +1080,30 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
                     second_engine: AsyncEngine = cast(AsyncEngine, second_engine_opt)
                     try:
                         t_db2 = dt.datetime.now()
-                        _ = await run_on_engine(second_engine, write_all_action)
+                        second_report_obj: Any = await run_on_engine(second_engine, write_all_action)
                         ms_db2 = _tick(t_db2)
-                        report["secondary_mirrored"] = True
-                        log.info("[analyze/write] DUAL_WRITE mirror ok pars_id=%s took_ms=%s", pars_id, ms_db2)
+                        second_report: Dict[str, Any] = cast(Dict[str, Any], second_report_obj)
+                        report["secondary_report"] = second_report
+                        if second_report.get("mirror_skipped"):
+                            report["secondary_mirrored"] = False
+                            skip_reason = second_report.get("pars_site_skip_reason")
+                            if skip_reason:
+                                report["secondary_error"] = skip_reason
+                            else:
+                                report["secondary_error"] = "pars_site mirror skipped"
+                            log.warning(
+                                "[analyze/write] DUAL_WRITE mirror skipped pars_id=%s took_ms=%s reason=%s",
+                                pars_id,
+                                ms_db2,
+                                skip_reason,
+                            )
+                        else:
+                            report["secondary_mirrored"] = True
+                            log.info(
+                                "[analyze/write] DUAL_WRITE mirror ok pars_id=%s took_ms=%s",
+                                pars_id,
+                                ms_db2,
+                            )
                     except Exception as e:
                         log.error("DUAL_WRITE: зеркалирование во вторую БД не удалось pars_id=%s: %s",
                                   pars_id, e, exc_info=True)

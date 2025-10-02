@@ -3,7 +3,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from typing import Any, Optional, Iterable
+from dataclasses import dataclass
+from typing import Any, Optional, Iterable, Literal
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
@@ -11,6 +12,14 @@ from sqlalchemy import text
 from app.config import settings
 
 log = logging.getLogger("repo.parsing")
+
+
+@dataclass(frozen=True)
+class EnsureParsSiteRowResult:
+    """Результат ensure_pars_site_row."""
+
+    status: Literal["updated", "inserted", "skipped"]
+    reason: Optional[str] = None
 
 # ---------- лог-утилиты ----------
 
@@ -142,14 +151,17 @@ async def ensure_pars_site_row(
     pars_id: int,
     text_par: str,
     description: str,
-) -> bool:
+) -> EnsureParsSiteRowResult:
     """
     Идемпотентное обеспечение наличия строки в public.pars_site для данного id.
     Стратегия «безопасного зеркалирования»:
       1) UPDATE
       2) Если строки нет — проверяем company_id: если NOT NULL без DEFAULT, пропускаем INSERT.
          Иначе INSERT (id, text_par, description) + ON CONFLICT UPDATE description.
-    Возвращает: True, если была вставка (INSERT), False — если строка существовала или инсерт пропущен.
+    Возвращает EnsureParsSiteRowResult со статусом:
+        * "updated"  — строка уже существовала;
+        * "inserted" — строка была добавлена;
+        * "skipped"  — вставка невозможна (например, нет company_id для NOT NULL).
     """
     t0 = dt.datetime.now()
     log.info("[repo] ensure_pars_site_row: id=%s", pars_id)
@@ -161,7 +173,7 @@ async def ensure_pars_site_row(
     if upd.rowcount and upd.rowcount > 0:
         took = _tick(t0)
         log.info("[repo] ensure_pars_site_row: id=%s existed=True took_ms=%s", pars_id, took)
-        return False
+        return EnsureParsSiteRowResult(status="updated")
 
     # Проверяем ограничение на company_id
     meta = await conn.execute(
@@ -183,12 +195,16 @@ async def ensure_pars_site_row(
 
     if not company_nullable and not company_has_default:
         took = _tick(t0)
-        log.warning(
-            "[repo] ensure_pars_site_row: id=%s insert SKIPPED — pars_site.company_id is NOT NULL w/o DEFAULT; "
-            "mirror requires company mapping. took_ms=%s",
-            pars_id, took,
+        reason = (
+            "pars_site.company_id is NOT NULL w/o DEFAULT; mirror requires company mapping"
         )
-        return False
+        log.warning(
+            "[repo] ensure_pars_site_row: id=%s insert SKIPPED — %s took_ms=%s",
+            pars_id,
+            reason,
+            took,
+        )
+        return EnsureParsSiteRowResult(status="skipped", reason=reason)
 
     await conn.execute(
         text("""
@@ -201,7 +217,7 @@ async def ensure_pars_site_row(
     )
     took = _tick(t0)
     log.info("[repo] ensure_pars_site_row: id=%s inserted=True took_ms=%s", pars_id, took)
-    return True
+    return EnsureParsSiteRowResult(status="inserted")
 
 
 # ---------- helpers for catalogs ----------
