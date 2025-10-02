@@ -54,4 +54,5 @@ class IbMatchResponse(BaseModel):
     goods: List[IbMatchItem]
     equipment: List[IbMatchItem]
     summary: IbMatchSummary
+    debug_report: str | None = None
     duration_ms: int
