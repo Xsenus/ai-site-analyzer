@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, List, Optional, cast
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Query
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.exc import ProgrammingError
 
@@ -18,6 +18,10 @@ from app.api.schemas import (
     IbMatchRequest,
     IbMatchResponse,
     IbMatchSummary,
+)
+from app.schemas.equipment_selection import (
+    EquipmentSelectionResponse,
+    SampleTable,
 )
 from app.services.analyzer import (
     build_prompt,
@@ -38,6 +42,7 @@ from app.db.tx import (
     dual_write,
 )
 from app.services.embeddings import embed_many
+from app.services.equipment_selection import compute_equipment_selection
 from app.utils.vectors import cosine_similarity, format_pgvector, parse_pgvector
 
 log = logging.getLogger("api")
@@ -101,6 +106,85 @@ def _render_ascii_table(
 @router.get("/health")
 async def health():
     return {"ok": True, "time": dt.datetime.now(dt.timezone.utc).isoformat()}
+
+
+@router.get("/v1/equipment-selection", response_model=EquipmentSelectionResponse)
+async def equipment_selection(
+    client_request_id: int = Query(..., ge=1)
+) -> EquipmentSelectionResponse:
+    """
+    Вычисляет таблицы оборудования (1way/2way/3way/all) для клиента и возвращает
+    срезы данных, чтобы сразу увидеть результат.
+    """
+    engine_opt: Optional[AsyncEngine] = get_primary_engine() or get_secondary_engine()
+    if engine_opt is None:
+        raise HTTPException(status_code=500, detail="Нет доступных подключений к БД")
+
+    log.info("[equipment-selection] start client_request_id=%s", client_request_id)
+
+    async def _action(conn):
+        return await compute_equipment_selection(conn, client_request_id)
+
+    result = await run_on_engine(engine_opt, _action)
+
+    # --- Собираем наглядные ASCII-таблицы по топ-5 записей из каждого списка ---
+    sample_tables: list[SampleTable] = []
+
+    def _append_sample(title: str, headers: list[str], rows: list[list[str]]) -> None:
+        if not rows:
+            return
+        sample_tables.append(
+            SampleTable(title=title, lines=_render_ascii_table(headers, rows))
+        )
+
+    def _format_score(value: float | None) -> str:
+        return "-" if value is None else f"{value:.4f}"
+
+    _append_sample(
+        "EQUIPMENT_1way (через prodclass)",
+        ["ID", "Название", "SCORE"],
+        [
+            [str(row.id), row.equipment_name or "-", _format_score(row.score)]
+            for row in result.equipment_1way[:5]
+        ],
+    )
+    _append_sample(
+        "EQUIPMENT_2way (через goods_type)",
+        ["ID", "Название", "SCORE"],
+        [
+            [str(row.id), row.equipment_name or "-", _format_score(row.score)]
+            for row in result.equipment_2way[:5]
+        ],
+    )
+    _append_sample(
+        "EQUIPMENT_3way (через ai_site_equipment)",
+        ["ID", "Название", "SCORE"],
+        [
+            [str(row.id), row.equipment_name or "-", _format_score(row.score)]
+            for row in result.equipment_3way[:5]
+        ],
+    )
+    _append_sample(
+        "EQUIPMENT_ALL (объединённый рейтинг)",
+        ["ID", "Название", "SCORE", "Источник"],
+        [
+            [
+                str(row.id),
+                row.equipment_name or "-", 
+                _format_score(row.score),
+                row.source,
+            ]
+            for row in result.equipment_all[:5]
+        ],
+    )
+
+    result = result.copy(update={"sample_tables": sample_tables})
+    log.info(
+        "[equipment-selection] done client_request_id=%s equipment_all=%s",
+        client_request_id,
+        len(result.equipment_all),
+    )
+    return result
 
 
 def _resolve_mode(raw: Optional[str]) -> SyncMode:
