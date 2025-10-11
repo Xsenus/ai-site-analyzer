@@ -160,6 +160,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail="embedding provider failed")
         return {"embedding": [float(x) for x in vectors[0]]}
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def _favicon_alias() -> Response:
+        """Return an empty favicon to avoid 404 noise in the logs."""
+        return Response(content=b"", media_type="image/x-icon")
+
     # (опционально) совместимость с Next по умолчанию: POST /
     @app.post("/")
     async def _compat_root(body: AiSearchIn):
