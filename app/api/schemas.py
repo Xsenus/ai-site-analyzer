@@ -28,6 +28,70 @@ class AnalyzeResponse(BaseModel):
     duration_ms: int
 
 
+class CatalogItem(BaseModel):
+    id: int
+    name: str
+    vec: List[float] | str | None = None
+
+
+class AnalyzeFromJsonRequest(BaseModel):
+    text_par: str = Field(..., description="Сырый текст сайта для анализа")
+    pars_id: int | None = Field(default=None, ge=1, description="Опциональный pars_site.id для логов")
+    chat_model: str | None = None
+    embed_model: str | None = None
+    company_id: int | None = Field(default=None, ge=1)
+    goods_catalog: List[CatalogItem] | None = None
+    equipment_catalog: List[CatalogItem] | None = None
+    return_prompt: bool = False
+    return_answer_raw: bool = True
+
+
+class VectorPayload(BaseModel):
+    values: List[float] | None = None
+    literal: str | None = None
+    dim: int = 0
+
+
+class ProdclassPayload(BaseModel):
+    id: int
+    score: float
+    title: str
+    score_source: str
+
+
+class MatchedItemPayload(BaseModel):
+    text: str
+    match_id: int | None = None
+    score: float | None = None
+    vector: VectorPayload
+
+
+class DbPayload(BaseModel):
+    description: str
+    description_vector: VectorPayload
+    prodclass: ProdclassPayload
+    goods_types: List[MatchedItemPayload]
+    equipment: List[MatchedItemPayload]
+
+
+class AnalyzeFromJsonResponse(BaseModel):
+    pars_id: int | None = None
+    prompt: str | None = None
+    prompt_len: int
+    answer_raw: str | None = None
+    answer_len: int
+    description: str
+    parsed: Dict[str, Any]
+    prodclass: ProdclassPayload
+    description_vector: VectorPayload
+    goods_items: List[MatchedItemPayload]
+    equipment_items: List[MatchedItemPayload]
+    counts: Dict[str, int]
+    timings: Dict[str, int]
+    catalogs: Dict[str, int]
+    db_payload: DbPayload
+
+
 class IbMatchRequest(BaseModel):
     client_id: int = Field(..., ge=1)
     reembed_if_exists: bool = False
