@@ -4,7 +4,7 @@ import datetime as dt
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Optional, Iterable, Literal
+from typing import Any, Dict, Optional, Iterable, Literal
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy import text
@@ -38,6 +38,55 @@ def _tick(t0: dt.datetime) -> int:
 
 
 # ---------- infra / base ----------
+
+
+@dataclass(frozen=True)
+class _ColumnMeta:
+    nullable: bool
+    has_default: bool
+
+
+@dataclass(frozen=True)
+class EnsureIbProdclassRowResult:
+    status: Literal["exists", "inserted", "skipped"]
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ProdclassWriteResult:
+    status: Literal["inserted", "skipped"]
+    ensure_status: Literal["exists", "inserted", "skipped"]
+    row_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+_ib_prodclass_columns_cache: Optional[Dict[str, _ColumnMeta]] = None
+
+
+async def _get_ib_prodclass_columns(conn: AsyncConnection) -> Dict[str, _ColumnMeta]:
+    global _ib_prodclass_columns_cache
+    if _ib_prodclass_columns_cache is not None:
+        return _ib_prodclass_columns_cache
+
+    q = text(
+        """
+        SELECT column_name, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'ib_prodclass';
+        """
+    )
+    res = await conn.execute(q)
+    columns: Dict[str, _ColumnMeta] = {}
+    for row in res.mappings():
+        name = str(row["column_name"])
+        columns[name] = _ColumnMeta(
+            nullable=str(row["is_nullable"]).upper() == "YES",
+            has_default=row["column_default"] is not None,
+        )
+
+    _ib_prodclass_columns_cache = columns
+    return columns
+
 
 async def ensure_description_column(conn: AsyncConnection) -> bool:
     t0 = dt.datetime.now()
@@ -148,7 +197,9 @@ async def update_pars_text_vector(conn: AsyncConnection, pars_id: int, vec_liter
     return ok
 
 
-async def ensure_ib_prodclass_row(conn: AsyncConnection, prodclass_id: int) -> bool:
+async def ensure_ib_prodclass_row(
+    conn: AsyncConnection, prodclass_id: int
+) -> EnsureIbProdclassRowResult:
     """Гарантирует наличие записи в справочнике ib_prodclass."""
 
     t0 = dt.datetime.now()
@@ -165,7 +216,7 @@ async def ensure_ib_prodclass_row(conn: AsyncConnection, prodclass_id: int) -> b
             prodclass_id,
             ms,
         )
-        return False
+        return EnsureIbProdclassRowResult(status="exists")
 
     title = IB_PRODCLASS.get(prodclass_id)
     if title is None:
@@ -178,6 +229,31 @@ async def ensure_ib_prodclass_row(conn: AsyncConnection, prodclass_id: int) -> b
         raise ValueError(
             f"Prodclass {prodclass_id} отсутствует в локальном справочнике IB_PRODCLASS"
         )
+
+    columns = await _get_ib_prodclass_columns(conn)
+    required_extra_cols = [
+        name
+        for name, meta in columns.items()
+        if name not in {"id", "prodclass"} and not meta.nullable and not meta.has_default
+    ]
+    if required_extra_cols:
+        ms = _tick(t0)
+        missing = ", ".join(sorted(required_extra_cols))
+        log.warning(
+            "[repo] ensure_ib_prodclass_row: id=%s cannot autoinsert required_columns=%s took_ms=%s",
+            prodclass_id,
+            missing,
+            ms,
+        )
+        reason = (
+            "Автоматическое добавление prodclass недоступно: таблица public.ib_prodclass "
+            f"требует значения в колонках {missing}. Добавьте запись {prodclass_id} вручную "
+            "или настройте источники данных для этих полей."
+        )
+        log.warning(
+            "[repo] ensure_ib_prodclass_row: id=%s skip auto-insert reason=%s", prodclass_id, reason
+        )
+        return EnsureIbProdclassRowResult(status="skipped", reason=reason)
 
     try:
         await conn.execute(
@@ -209,7 +285,7 @@ async def ensure_ib_prodclass_row(conn: AsyncConnection, prodclass_id: int) -> b
         prodclass_id,
         ms,
     )
-    return True
+    return EnsureIbProdclassRowResult(status="inserted")
 
 
 async def ensure_pars_site_row(
@@ -663,10 +739,26 @@ async def update_equipment_matches(conn: AsyncConnection, items: list[tuple[int,
 
 # ---------- inserts (enriched) ----------
 
-async def insert_ai_site_prodclass(conn: AsyncConnection, pars_id: int, prodclass: int, score: float) -> int:
+async def insert_ai_site_prodclass(
+    conn: AsyncConnection, pars_id: int, prodclass: int, score: float
+) -> ProdclassWriteResult:
     t0 = dt.datetime.now()
     log.info("[repo] insert_ai_site_prodclass: pars_id=%s prodclass=%s score=%s", pars_id, prodclass, score)
-    await ensure_ib_prodclass_row(conn, prodclass)
+    ensure_result = await ensure_ib_prodclass_row(conn, prodclass)
+    if ensure_result.status == "skipped":
+        ms_skip = _tick(t0)
+        log.warning(
+            "[repo] insert_ai_site_prodclass: skip pars_id=%s prodclass=%s reason=%s took_ms=%s",
+            pars_id,
+            prodclass,
+            ensure_result.reason,
+            ms_skip,
+        )
+        return ProdclassWriteResult(
+            status="skipped",
+            ensure_status=ensure_result.status,
+            reason=ensure_result.reason,
+        )
     try:
         res = await conn.execute(
             text(
@@ -694,7 +786,11 @@ async def insert_ai_site_prodclass(conn: AsyncConnection, pars_id: int, prodclas
     new_id = int(res.scalar_one())
     ms = _tick(t0)
     log.info("[repo] insert_ai_site_prodclass: inserted id=%s took_ms=%s", new_id, ms)
-    return new_id
+    return ProdclassWriteResult(
+        status="inserted",
+        ensure_status=ensure_result.status,
+        row_id=new_id,
+    )
 
 
 async def insert_ai_site_equipment_enriched(
