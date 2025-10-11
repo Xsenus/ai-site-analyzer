@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict, List, Optional
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
 
 from app.config import settings
 from app.models.ib_prodclass import IB_PRODCLASS
+
+_PRODCLASS_NAME_VECS_CACHE: Dict[str, Tuple[List[int], List[List[float]]]] = {}
 
 # Клиент OpenAI (async)
 oai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
@@ -185,11 +188,114 @@ def _split(s: str) -> List[str]:
     return _dedup_ordered(parts)
 
 
-def _parse_prodclass_id(s: str) -> int:
-    m = re.search(r"\d+", s)
-    if not m:
-        raise ValueError("В секции [PRODCLASS] не найдено целое число ID")
-    return int(m.group(0))
+def _normalize_for_match(text: str) -> str:
+    if not text:
+        return ""
+    lowered = text.casefold()
+    cleaned = re.sub(r"[^0-9a-zа-яё]+", " ", lowered)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+_PRODCLASS_NORMALIZED_CACHE: Dict[int, str] = {}
+
+
+def _get_normalized_prodclass_name(prodclass_id: int) -> str:
+    cached = _PRODCLASS_NORMALIZED_CACHE.get(prodclass_id)
+    if cached is None:
+        cached = _normalize_for_match(IB_PRODCLASS.get(prodclass_id, ""))
+        _PRODCLASS_NORMALIZED_CACHE[prodclass_id] = cached
+    return cached
+
+
+def _parse_prodclass_id_from_digits(s: str) -> Optional[int]:
+    if not s:
+        return None
+    for m in re.finditer(r"\d+", s):
+        value = int(m.group(0))
+        if value in IB_PRODCLASS:
+            return value
+    return None
+
+
+def _guess_prodclass_by_name(section_text: str) -> Optional[int]:
+    normalized = _normalize_for_match(section_text)
+    if not normalized:
+        return None
+
+    best_id: Optional[int] = None
+    best_score = 0.0
+    for prodclass_id in sorted(IB_PRODCLASS):
+        name_norm = _get_normalized_prodclass_name(prodclass_id)
+        if not name_norm:
+            continue
+        if normalized == name_norm or normalized in name_norm or name_norm in normalized:
+            return prodclass_id
+        ratio = SequenceMatcher(None, normalized, name_norm).ratio()
+        if ratio > best_score:
+            best_score = ratio
+            best_id = prodclass_id
+
+    if best_id is not None and best_score >= 0.55:
+        return best_id
+    return None
+
+
+async def _guess_prodclass_by_embeddings(text_par: str, embed_model: str) -> Optional[int]:
+    if not embed_model:
+        return None
+
+    payload = (text_par or "").strip()
+    if not payload:
+        return None
+
+    truncated = payload[:6000]
+    text_vec = await embed_single_text(truncated, embed_model)
+    if text_vec is None:
+        return None
+
+    cached = _PRODCLASS_NAME_VECS_CACHE.get(embed_model)
+    if cached is None:
+        prodclass_items = sorted(IB_PRODCLASS.items())
+        ids = [pid for pid, _ in prodclass_items]
+        names = [name for _, name in prodclass_items]
+        name_vecs = await _embeddings(names, embed_model)
+        cached = (ids, name_vecs)
+        _PRODCLASS_NAME_VECS_CACHE[embed_model] = cached
+
+    ids, name_vecs = cached
+
+    best_idx = -1
+    best_cos = -1.0
+    for idx, name_vec in enumerate(name_vecs):
+        cos = _cosine_lists(text_vec, name_vec)
+        if cos > best_cos:
+            best_cos = cos
+            best_idx = idx
+
+    if best_idx < 0:
+        return None
+
+    score = (best_cos + 1.0) / 2.0
+    if score < 0.3:
+        return None
+
+    return ids[best_idx]
+
+
+async def _resolve_prodclass_id(section_text: str, text_par: str, embed_model: str) -> Tuple[int, str]:
+    digit_id = _parse_prodclass_id_from_digits(section_text)
+    if digit_id is not None:
+        return digit_id, "model_reply"
+
+    name_id = _guess_prodclass_by_name(section_text)
+    if name_id is not None:
+        return name_id, "name_match"
+
+    embed_id = await _guess_prodclass_by_embeddings(text_par, embed_model)
+    if embed_id is not None:
+        return embed_id, "text_embedding_fallback"
+
+    raise ValueError("В секции [PRODCLASS] не найдено целое число ID")
 
 
 def _parse_score(s: Optional[str]) -> Optional[float]:
@@ -215,7 +321,11 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
     data["GOODS_RAW"] = _extract_section("GOODS", answer, required=True) or ""
     data["GOODS_TYPE_RAW"] = _extract_section("GOODS_TYPE", answer, required=True) or ""
 
-    data["PRODCLASS"] = _parse_prodclass_id(data["PRODCLASS_RAW"])
+    prodclass_id, prodclass_source = await _resolve_prodclass_id(
+        data["PRODCLASS_RAW"], text_par_for_fallback, embed_model
+    )
+    data["PRODCLASS"] = prodclass_id
+    data["PRODCLASS_SOURCE"] = prodclass_source
     score = _parse_score(data["PRODCLASS_SCORE_RAW"])
 
     used_fallback = False
