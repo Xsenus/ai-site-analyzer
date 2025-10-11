@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
+from app.models.ib_prodclass import IB_PRODCLASS
 
 log = logging.getLogger("repo.parsing")
 
@@ -145,6 +146,70 @@ async def update_pars_text_vector(conn: AsyncConnection, pars_id: int, vec_liter
     ms = _tick(t0)
     log.info("[repo] update_pars_text_vector: id=%s updated=%s took_ms=%s", pars_id, ok, ms)
     return ok
+
+
+async def ensure_ib_prodclass_row(conn: AsyncConnection, prodclass_id: int) -> bool:
+    """Гарантирует наличие записи в справочнике ib_prodclass."""
+
+    t0 = dt.datetime.now()
+    log.info("[repo] ensure_ib_prodclass_row: id=%s", prodclass_id)
+
+    res = await conn.execute(
+        text("SELECT 1 FROM public.ib_prodclass WHERE id = :id;"),
+        {"id": prodclass_id},
+    )
+    if res.first() is not None:
+        ms = _tick(t0)
+        log.info(
+            "[repo] ensure_ib_prodclass_row: id=%s already exists took_ms=%s",
+            prodclass_id,
+            ms,
+        )
+        return False
+
+    title = IB_PRODCLASS.get(prodclass_id)
+    if title is None:
+        ms = _tick(t0)
+        log.error(
+            "[repo] ensure_ib_prodclass_row: id=%s missing in IB_PRODCLASS took_ms=%s",
+            prodclass_id,
+            ms,
+        )
+        raise ValueError(
+            f"Prodclass {prodclass_id} отсутствует в локальном справочнике IB_PRODCLASS"
+        )
+
+    try:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO public.ib_prodclass (id, prodclass)
+                VALUES (:id, :title)
+                ON CONFLICT (id) DO NOTHING;
+                """
+            ),
+            {"id": prodclass_id, "title": title},
+        )
+    except IntegrityError as exc:
+        ms = _tick(t0)
+        log.error(
+            "[repo] ensure_ib_prodclass_row: id=%s insert failed took_ms=%s error=%s",
+            prodclass_id,
+            ms,
+            exc,
+            exc_info=True,
+        )
+        raise ValueError(
+            f"Не удалось добавить prodclass {prodclass_id} в ib_prodclass: {exc}"
+        ) from exc
+
+    ms = _tick(t0)
+    log.info(
+        "[repo] ensure_ib_prodclass_row: id=%s inserted took_ms=%s",
+        prodclass_id,
+        ms,
+    )
+    return True
 
 
 async def ensure_pars_site_row(
@@ -601,14 +666,31 @@ async def update_equipment_matches(conn: AsyncConnection, items: list[tuple[int,
 async def insert_ai_site_prodclass(conn: AsyncConnection, pars_id: int, prodclass: int, score: float) -> int:
     t0 = dt.datetime.now()
     log.info("[repo] insert_ai_site_prodclass: pars_id=%s prodclass=%s score=%s", pars_id, prodclass, score)
-    res = await conn.execute(
-        text("""
-            INSERT INTO public.ai_site_prodclass (text_pars_id, prodclass, prodclass_score)
-            VALUES (:pid, :pc, :sc)
-            RETURNING id;
-        """),
-        {"pid": pars_id, "pc": prodclass, "sc": score},
-    )
+    await ensure_ib_prodclass_row(conn, prodclass)
+    try:
+        res = await conn.execute(
+            text(
+                """
+                INSERT INTO public.ai_site_prodclass (text_pars_id, prodclass, prodclass_score)
+                VALUES (:pid, :pc, :sc)
+                RETURNING id;
+                """
+            ),
+            {"pid": pars_id, "pc": prodclass, "sc": score},
+        )
+    except IntegrityError as exc:
+        ms = _tick(t0)
+        log.error(
+            "[repo] insert_ai_site_prodclass: integrity error pars_id=%s prodclass=%s took_ms=%s error=%s",
+            pars_id,
+            prodclass,
+            ms,
+            exc,
+            exc_info=True,
+        )
+        raise ValueError(
+            "Не удалось сохранить prodclass: проверьте наличие записи в ib_prodclass"
+        ) from exc
     new_id = int(res.scalar_one())
     ms = _tick(t0)
     log.info("[repo] insert_ai_site_prodclass: inserted id=%s took_ms=%s", new_id, ms)
