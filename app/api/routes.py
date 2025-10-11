@@ -1066,6 +1066,7 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
         text_vector_action = "skip"
         text_vector_updated = False
         prodclass_row_id: Optional[int] = None
+        prodclass_result = None
         eq_rows: List[Tuple[int, str]] = []
         gt_rows: List[Tuple[int, str]] = []
 
@@ -1102,16 +1103,26 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
                 raise ValueError("PRODCLASS_SCORE отсутствует или не является числом")
 
             # 5) prodclass
-            prodclass_row_id = await repo.insert_ai_site_prodclass(
+            prodclass_result = await repo.insert_ai_site_prodclass(
                 conn, pars_id, prodclass_id_opt, float(prodclass_score_opt)
             )
-            log.info(
-                "[analyze/write] insert_ai_site_prodclass pars_id=%s row_id=%s id=%s score=%s",
-                pars_id,
-                prodclass_row_id,
-                prodclass_id_opt,
-                prodclass_score_opt,
-            )
+            prodclass_row_id = prodclass_result.row_id
+            if prodclass_result.status == "skipped":
+                log.warning(
+                    "[analyze/write] insert_ai_site_prodclass skipped pars_id=%s id=%s reason=%s",
+                    pars_id,
+                    prodclass_id_opt,
+                    prodclass_result.reason,
+                )
+            else:
+                log.info(
+                    "[analyze/write] insert_ai_site_prodclass pars_id=%s row_id=%s id=%s score=%s ensure_status=%s",
+                    pars_id,
+                    prodclass_row_id,
+                    prodclass_id_opt,
+                    prodclass_score_opt,
+                    prodclass_result.ensure_status,
+                )
 
             # 6) enriched вставки
             eq_rows = await repo.insert_ai_site_equipment_enriched(conn, pars_id, equip_enriched)
@@ -1141,6 +1152,9 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
             "updated_pars_site_text_vector": text_vector_updated,
             "pars_site_text_vector_action": text_vector_action,
             "ai_site_prodclass_row_id": prodclass_row_id,
+            "prodclass_status": getattr(prodclass_result, "status", "skipped"),
+            "prodclass_ensure_status": getattr(prodclass_result, "ensure_status", "skipped"),
+            "prodclass_skip_reason": getattr(prodclass_result, "reason", None),
             "prodclass_score": prodclass_score_opt,
             "prodclass_score_source": parsed.get("PRODCLASS_SCORE_SOURCE"),
             "equipment_rows": equip_rows_fmt,
@@ -1292,12 +1306,6 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
 # ======================
 # Роуты
 # ======================
-
-@router.post("/v1/analyze/{pars_id}", response_model=AnalyzeResponse)
-async def analyze(pars_id: int, body: AnalyzeRequest):
-    """Запуск анализа по известному pars_id."""
-    return await _analyze_impl(pars_id, body)
-
 
 @router.post("/v1/analyze/json", response_model=AnalyzeFromJsonResponse)
 async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResponse:
@@ -1541,6 +1549,13 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     log.debug("[analyze/json] response summary %s", response.model_dump(exclude_none=True))
 
     return response
+
+
+@router.post("/v1/analyze/{pars_id}", response_model=AnalyzeResponse)
+async def analyze(pars_id: int, body: AnalyzeRequest):
+    """Запуск анализа по известному pars_id."""
+    return await _analyze_impl(pars_id, body)
+
 
 @router.post("/v1/analyze/by-site/{site}", response_model=AnalyzeResponse)
 async def analyze_by_site(site: str, body: AnalyzeRequest):
