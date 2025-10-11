@@ -1,0 +1,190 @@
+# Инструкция для сервиса-записи: как использовать `/v1/analyze/json`
+
+Документ описывает полный цикл взаимодействия сервиса записи с API анализа сайтов.
+Цель — получить от API готовую структуру `db_payload` и корректно синхронизировать
+её с собственными таблицами БД.
+
+## 1. Какие данные подготовить перед вызовом API
+
+### 1.1. Основной текст сайта
+
+* Источник: таблица `public.pars_site`.
+* Необходимые поля: `id`, `text_par`, при наличии — `company_id` для логирования.
+* Пример запроса:
+  ```sql
+  SELECT id, company_id, text_par
+  FROM public.pars_site
+  WHERE id = :pars_id;
+  ```
+* Если текст хранится в другом сервисе — сформируйте строку `text_par` вручную.
+* Перед отправкой в API текст нужно очистить от управляющих символов и лишних
+  пробелов (API делает `strip`, но лучше подготовить заранее).
+
+### 1.2. Каталоги товаров и оборудования (опционально)
+
+API принимает готовые каталоги в теле запроса и использует их для матчинга. Если
+каталоги не передать, ответ вернёт только сырые списки из LLM без привязки к
+ID.
+
+* Таблицы по умолчанию: `public.ib_goods_types` и `public.ib_equipment`.
+* Колонки с именами и векторами детектируются автоматически, но их можно
+  задать через настройки (`IB_*` в `.env`).【F:app/repositories/parsing_repo.py†L356-L404】【F:app/config.py†L92-L140】
+* Примеры запросов с дефолтными именами колонок:
+  ```sql
+  SELECT id, goods_type_name AS name, goods_type_vector::text AS vec
+  FROM public.ib_goods_types
+  ORDER BY id;
+  
+  SELECT id, equipment_name AS name, equipment_vector::text AS vec
+  FROM public.ib_equipment
+  ORDER BY id;
+  ```
+* Если вектор хранится массивом чисел, приведите его к строке pgvector (`[0.1,
+  0.2, ...]`) либо к массиву `float` — API принимает оба варианта.
+
+## 2. Как сформировать запрос к `/v1/analyze/json`
+
+### 2.1. Метод и заголовки
+
+* Метод: `POST`
+* URL: `/v1/analyze/json`
+* Заголовки: минимум `Content-Type: application/json`
+
+### 2.2. Тело запроса
+
+Схема описана моделью `AnalyzeFromJsonRequest`【F:app/api/schemas.py†L37-L46】.
+Ключевые поля:
+
+| Поле | Обязательность | Описание |
+| --- | --- | --- |
+| `text_par` | Да | Текст сайта для анализа. |
+| `pars_id` | Нет | ID строки `pars_site` (используется в логах и далее в БД). |
+| `company_id` | Нет | ID компании для расширенных логов. |
+| `chat_model` | Нет | Название модели LLM. Если не указано, берётся из настроек (`settings.CHAT_MODEL`, по умолчанию `gpt-4o`).【F:app/api/routes.py†L1314-L1325】【F:app/config.py†L49-L66】 |
+| `embed_model` | Нет | Модель эмбеддингов. При отсутствии используется `settings.embed_model` (алиас к `OPENAI_EMBED_MODEL`).【F:app/api/routes.py†L1314-L1325】【F:app/config.py†L118-L140】 |
+| `goods_catalog` | Нет | Каталог товаров — массив объектов `CatalogItem` с `id`, `name`, `vec`. |
+| `equipment_catalog` | Нет | Каталог оборудования — аналогичный массив. |
+| `return_prompt` / `return_answer_raw` | Нет | Флаги для отладки: вернуть ли сформированный промпт и «сырой» ответ LLM. |
+
+Пример минимального тела запроса:
+```json
+{
+  "pars_id": 12345,
+  "text_par": "ООО \"Пример\" изготавливает кабельные жгуты для автопрома..."
+}
+```
+
+### 2.3. Логирование на стороне сервиса
+
+На своей стороне логируйте:
+1. Исходный `pars_id`, длину текста и размер каталогов.
+2. Итоговый URL и тело (без секрета API).
+3. Код ответа и краткую сводку `counts`/`timings` после успешного вызова.
+
+API само логирует весь внутренний пайплайн (построение промпта, вызов модели,
+парсинг, вектора, обогащение каталогами).【F:app/api/routes.py†L1330-L1541】
+
+## 3. Что приходит в ответ и как его обработать
+
+Ответ соответствует модели `AnalyzeFromJsonResponse`【F:app/api/schemas.py†L77-L92】.
+Основной блок для записи в базу — `db_payload`【F:app/api/schemas.py†L69-L74】. Он содержит:
+
+* `description` — итоговое описание компании.
+* `description_vector` — вектор описания (если текст не пустой и эмбеддинг
+  успешно посчитан).【F:app/api/routes.py†L1420-L1449】
+* `prodclass` — ID класса, скор, название и источник оценки.【F:app/api/routes.py†L1401-L1418】
+* `goods_types` — список товаров с привязкой к каталогу и векторами.
+* `equipment` — аналогичный список оборудования.【F:app/api/routes.py†L1450-L1506】
+
+Дополнительно полезны `counts`, `timings`, `catalogs` для мониторинга.
+
+### 3.1. Обновление `pars_site`
+
+1. Если `pars_id` известен, обновите поле `description` и при наличии — вектор
+   `text_vector`.
+   ```sql
+   UPDATE public.pars_site
+   SET description = :description,
+       text_vector = CASE
+           WHEN :description_vector_literal IS NULL THEN NULL
+           ELSE CAST(:description_vector_literal AS vector)
+       END
+   WHERE id = :pars_id;
+   ```
+2. Рекомендуется выполнять в рамках одной транзакции вместе с остальными
+   вставками. Если `pars_id` отсутствует, сохраните описание в своём хранилище
+   без обновления таблицы.
+
+### 3.2. Вставка в `ai_site_prodclass`
+
+Используйте значения из `db_payload.prodclass`:
+```sql
+INSERT INTO public.ai_site_prodclass (text_pars_id, prodclass, prodclass_score)
+VALUES (:pars_id, :prodclass_id, :prodclass_score);
+```
+Структура соответствует репозиторию анализа.【F:app/repositories/parsing_repo.py†L601-L615】
+
+### 3.3. Вставка в `ai_site_goods_types`
+
+Для каждого элемента `db_payload.goods_types`:
+```sql
+INSERT INTO public.ai_site_goods_types
+    (text_par_id, goods_type, goods_types_score, goods_type_ID, text_vector)
+VALUES
+    (:pars_id, :goods_name, :match_score, :match_id,
+     CASE WHEN :vector_literal IS NULL THEN NULL ELSE CAST(:vector_literal AS vector) END);
+```
+Колонки совпадают с текущей реализацией сервиса анализа.【F:app/repositories/parsing_repo.py†L663-L705】
+
+### 3.4. Вставка в `ai_site_equipment`
+
+Аналогично блокам оборудования:
+```sql
+INSERT INTO public.ai_site_equipment
+    (text_pars_id, equipment, equipment_score, equipment_ID, text_vector)
+VALUES
+    (:pars_id, :equipment_name, :match_score, :match_id,
+     CASE WHEN :vector_literal IS NULL THEN NULL ELSE CAST(:vector_literal AS vector) END);
+```
+Структура соответствует текущей вставке в репозитории.【F:app/repositories/parsing_repo.py†L618-L660】
+
+### 3.5. Обработка векторных данных
+
+* `VectorPayload` содержит `values` (массив чисел) и `literal` (строка pgvector).
+* Если `literal` заполнен — можно использовать напрямую в `CAST(:literal AS vector)`.
+* Если `literal` пуст, а `values` присутствуют, сформируйте строку `[...]` перед
+  вставкой.
+
+### 3.6. Финальные действия
+
+1. После успешной записи зафиксируйте транзакцию (`COMMIT`).
+2. В логах сохраните ID вставленных строк и ключевые показатели (`counts`,
+   `timings`).
+3. При необходимости прокиньте `parsed` или `answer_raw` в аудит.
+
+## 4. Политика обработки ошибок и повторов
+
+1. **HTTP-ошибка или таймаут при вызове API.**
+   * Запишите ошибку в журнал.
+   * Повторите попытку не более двух раз (всего максимум три вызова) с экспоненциальной
+     паузой, чтобы избежать DDOS.
+   * После трёх неудач — прекратите попытки, пометьте задачу как "failed", в БД ничего
+     не записывайте.
+
+2. **API вернул ошибку 4xx.**
+   * Это ошибка входных данных. Не делайте повторов без изменения запроса.
+   * Логируйте текст ошибки, перейдите к следующей задаче.
+
+3. **Ошибка при разборе ответа или отсутствует `db_payload`.**
+   * Такое возможно только при нарушении контракта. Зафиксируйте ответ целиком
+     и не записывайте данные в БД.
+   * Передайте событие в мониторинг/алертинг.
+
+4. **Ошибки записи в БД.**
+   * Работайте в транзакции: при исключении выполните `ROLLBACK` и не оставляйте
+     частично записанных данных.
+   * Повторите попытку записи максимум один раз (итого два коммита). Если ошибка
+     повторяется — сохраните задачу в отдельную очередь для ручной проверки.
+
+Следуя этим шагам, внешний сервис сможет безопасно использовать `/v1/analyze/json`
+и синхронизировать данные анализа с собственной базой.
