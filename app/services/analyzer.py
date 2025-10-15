@@ -330,9 +330,17 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
 
     used_fallback = False
     if score is None:
+        if not embed_model:
+            raise ValueError("embed_model is required to compute PRODCLASS_SCORE fallback")
+
         cls_name = IB_PRODCLASS.get(data["PRODCLASS"], f"Класс {data['PRODCLASS']}")
-        # ограничим длину текста, чтобы не уходить в слишком большие запросы
-        vecs = await _embeddings([text_par_for_fallback[:6000], cls_name], embed_model)
+        truncated_text = text_par_for_fallback[:6000]
+        vecs = await _embeddings([truncated_text, cls_name], embed_model)
+        if len(vecs) < 2:
+            raise ValueError(
+                "Failed to compute PRODCLASS_SCORE fallback: embeddings response is incomplete"
+            )
+
         v1, v2 = vecs[0], vecs[1]
         sim = _cosine_lists(v1, v2)
         score = float(f"{(sim + 1.0) / 2.0:.2f}")
