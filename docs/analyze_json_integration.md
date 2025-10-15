@@ -169,11 +169,19 @@ API само логирует весь внутренний пайплайн (п
 * `description` — итоговое описание компании.
 * `description_vector` — вектор описания (если текст не пустой и эмбеддинг
   успешно посчитан).【F:app/api/routes.py†L1420-L1449】
-* `prodclass` — ID класса, скор, название и источник оценки.【F:app/api/routes.py†L1401-L1418】
+* `prodclass` — ID класса, скор, название, источник скора и способ определения ID.【F:app/api/routes.py†L1401-L1422】
 * `goods_types` — список товаров с привязкой к каталогу и векторами.
 * `equipment` — аналогичный список оборудования.【F:app/api/routes.py†L1450-L1506】
 
 Дополнительно полезны `counts`, `timings`, `catalogs` для мониторинга.
+
+В словаре `parsed` теперь дублируются ключевые данные для аудита:
+
+* `LLM_ANSWER` — оригинальный ответ модели (когда `return_answer_raw=true`).
+* `AI_SITE_GOODS_TYPES` и `AI_SITE_EQUIPMENT` — предпросмотр строк для таблиц `ai_site_goods_types` и `ai_site_equipment` с расчётными полями.
+  Эти структуры помогают сравнить будущие вставки с ожидаемыми данными из собственной логики записи.【F:app/api/routes.py†L1483-L1520】【F:app/api/routes.py†L1259-L1295】
+* `PRODCLASS_SOURCE` — способ определения класса производства (`model_reply`, `name_match`, `text_embedding_fallback`).
+* `GOODS_TYPE_SOURCE` — источник списка товаров (`GOODS_TYPE` из ответа модели или резервный `GOODS`).
 
 ### 3.1. Обновление `pars_site`
 
