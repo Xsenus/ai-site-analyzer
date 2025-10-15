@@ -331,6 +331,42 @@ def _matched_payload(items: List[Dict[str, Any]]) -> List[MatchedItemPayload]:
     return payload
 
 
+def _ai_site_preview(
+    items: List[Dict[str, Any]],
+    *,
+    pars_id: Optional[int],
+    name_key: str,
+    id_key: str,
+    score_key: str,
+) -> List[Dict[str, Any]]:
+    preview: List[Dict[str, Any]] = []
+    for it in items:
+        vector_literal_raw = it.get("vec_str")
+        vector_literal = None
+        if isinstance(vector_literal_raw, str):
+            literal = vector_literal_raw.strip()
+            vector_literal = literal or None
+        vector_dim = 0
+        vec_values = it.get("vec")
+        if isinstance(vec_values, list):
+            try:
+                vector_dim = len(vec_values)
+            except TypeError:
+                vector_dim = 0
+
+        preview.append(
+            {
+                "text_par_id": pars_id,
+                name_key: str(it.get("text") or ""),
+                id_key: _as_int(it.get("match_id")),
+                score_key: _as_float(it.get("score")),
+                "text_vector": vector_literal,
+                "vector_dim": vector_dim,
+            }
+        )
+    return preview
+
+
 def _normalize_site(raw: str) -> str:
     """
     Принимает домен или полный URL и приводит к нормализованному домену:
@@ -1287,6 +1323,27 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
     dt_ms = _tick(t0)
     prodclass_key: int = prodclass_id_opt if prodclass_id_opt is not None else -1
     prodclass_title: str = IB_PRODCLASS.get(prodclass_key, "—")
+    goods_preview = _ai_site_preview(
+        goods_enriched,
+        pars_id=pars_id,
+        name_key="goods_type",
+        id_key="goods_type_ID",
+        score_key="goods_types_score",
+    )
+    equip_preview = _ai_site_preview(
+        equip_enriched,
+        pars_id=pars_id,
+        name_key="equipment",
+        id_key="equipment_ID",
+        score_key="equipment_score",
+    )
+    answer_payload = answer if getattr(body, "return_answer_raw", False) else None
+    parsed_payload = parsed | {
+        "PRODCLASS_TITLE": prodclass_title,
+        "LLM_ANSWER": answer_payload,
+        "AI_SITE_GOODS_TYPES": goods_preview,
+        "AI_SITE_EQUIPMENT": equip_preview,
+    }
 
     log.info("[analyze] done pars_id=%s duration_ms=%s used_db_mode=%s write_db=%s",
              pars_id, dt_ms, report.get("write_mode", ""), report.get("write_db", "∅"))
@@ -1296,8 +1353,8 @@ async def _analyze_impl(pars_id: int, body: AnalyzeRequest) -> AnalyzeResponse:
         used_db_mode=report.get("write_mode", ""),
         prompt_len=len(prompt),
         answer_len=len(answer or ""),
-        answer_raw=(answer if getattr(body, "return_answer_raw", False) else None),
-        parsed=parsed | {"PRODCLASS_TITLE": prodclass_title},
+        answer_raw=answer_payload,
+        parsed=parsed_payload,
         report=(None if report.get("dry_run") else report),
         duration_ms=dt_ms,
     )
@@ -1409,6 +1466,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     prodclass_id = _as_int(parsed.get("PRODCLASS"))
     prodclass_score = _as_float(parsed.get("PRODCLASS_SCORE"))
     score_source = str(parsed.get("PRODCLASS_SCORE_SOURCE") or "model_reply")
+    prodclass_source = str(parsed.get("PRODCLASS_SOURCE") or "model_reply")
 
     if prodclass_id is None:
         log.error("[analyze/json] prodclass missing")
@@ -1423,6 +1481,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         score=float(prodclass_score),
         title=prodclass_title,
         score_source=score_source,
+        source=prodclass_source,
     )
 
     description_text = str(parsed.get("DESCRIPTION") or "").strip()
@@ -1496,6 +1555,21 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     goods_payload = _matched_payload(goods_enriched)
     equip_payload = _matched_payload(equip_enriched)
 
+    goods_preview = _ai_site_preview(
+        goods_enriched,
+        pars_id=pars_id,
+        name_key="goods_type",
+        id_key="goods_type_ID",
+        score_key="goods_types_score",
+    )
+    equip_preview = _ai_site_preview(
+        equip_enriched,
+        pars_id=pars_id,
+        name_key="equipment",
+        id_key="equipment_ID",
+        score_key="equipment_score",
+    )
+
     counts = {
         "goods_source": len(goods_source_list),
         "equip_source": len(equip_source_list),
@@ -1503,7 +1577,13 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         "equip_enriched": len(equip_payload),
     }
 
-    parsed_with_title = parsed | {"PRODCLASS_TITLE": prodclass_title}
+    answer_payload = answer if body.return_answer_raw else None
+    parsed_with_title = parsed | {
+        "PRODCLASS_TITLE": prodclass_title,
+        "LLM_ANSWER": answer_payload,
+        "AI_SITE_GOODS_TYPES": goods_preview,
+        "AI_SITE_EQUIPMENT": equip_preview,
+    }
 
     db_payload = DbPayload(
         description=description_text,

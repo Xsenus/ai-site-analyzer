@@ -57,6 +57,7 @@ class ProdclassPayload(BaseModel):
     score: float
     title: str
     score_source: str
+    source: str
 
 
 class MatchedItemPayload(BaseModel):
