@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class SiteProfileRequest(BaseModel):
-    """Запрос на генерацию структурированного описания компании."""
+    """Запрос на генерацию подробного описания компании."""
 
     source_text: str = Field(
         ..., min_length=1, description="Сырый текст с сайта компании"

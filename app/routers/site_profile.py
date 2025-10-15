@@ -18,7 +18,7 @@ router = APIRouter(prefix="/v1/site-profile", tags=["site-profile"])
 
 @router.post("", response_model=SiteProfileResponse)
 async def create_site_profile(payload: SiteProfileRequest) -> SiteProfileResponse:
-    """Генерация структурированного описания компании и его эмбеддинга."""
+    """Генерация подробного описания компании и его эмбеддинга."""
 
     source_text = payload.source_text.strip()
     if not source_text:
