@@ -37,6 +37,12 @@ try:
 except Exception:
     HAS_AI_SEARCH = False
 
+try:
+    from app.routers.site_profile import router as site_profile_router  # noqa: F401
+    HAS_SITE_PROFILE = True
+except Exception:
+    HAS_SITE_PROFILE = False
+
 
 # ---------------------------
 # Логирование
@@ -141,6 +147,11 @@ def create_app() -> FastAPI:
 
     # Подключаем ваши /v1/... маршруты
     app.include_router(api_router)
+
+    if HAS_SITE_PROFILE:
+        from app.routers.site_profile import router as site_profile_router  # локальный импорт для ясности
+
+        app.include_router(site_profile_router)
 
     # Подключаем /api/ai-search, если модуль присутствует
     if HAS_AI_SEARCH:
