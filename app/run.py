@@ -13,11 +13,28 @@ if sys.platform.startswith("win"):
 
 import uvicorn
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 if __name__ == "__main__":
+    reload_enabled = _bool_env("UVICORN_RELOAD", default=False)
+
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8090"))
+    workers = int(os.getenv("WORKERS", "1"))
+
+    # Uvicorn не поддерживает несколько воркеров в режиме reload.
+    if reload_enabled and workers != 1:
+        workers = 1
+
     uvicorn.run(
         "app.main:app",
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8090")),
-        reload=True,
-        workers=1,
+        host=host,
+        port=port,
+        reload=reload_enabled,
+        workers=workers,
     )
