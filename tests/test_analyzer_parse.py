@@ -63,7 +63,7 @@ async def test_parse_openai_answer_merges_goods_type(monkeypatch):
 
     parsed = await analyzer.parse_openai_answer(answer, "текст", "embed-model")
 
-    assert parsed["GOODS_TYPE_LIST"] == ["Тип А", "Товар Б", "Товар А"]
+    assert parsed["GOODS_TYPE_LIST"] == ["Тип А", "Товар Б"]
     assert parsed["GOODS_TYPE_SOURCE"] == "GOODS_TYPE"
 
 

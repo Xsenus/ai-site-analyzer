@@ -392,9 +392,6 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
         # Если LLM не заполнил GOODS_TYPE, используем GOODS как запасной вариант
         goods_type_list = list(goods_list)
         goods_type_source = "GOODS"
-    elif goods_list:
-        # дополняем GOODS_TYPE значениями из GOODS (без дубликатов)
-        goods_type_list = _dedup_ordered(goods_type_list + goods_list)
 
     data["GOODS_TYPE_LIST"] = goods_type_list
     data["GOODS_TYPE_SOURCE"] = goods_type_source
