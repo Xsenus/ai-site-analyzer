@@ -1,5 +1,27 @@
 # app/run.py
-import sys, asyncio, os
+import sys
+import asyncio
+import os
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse boolean feature flags from the environment."""
+
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 # добавляем РОДИТЕЛЯ проекта в sys.path
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,10 +36,13 @@ if sys.platform.startswith("win"):
 import uvicorn
 
 if __name__ == "__main__":
+    reload_enabled = _env_flag("UVICORN_RELOAD", default=False)
+    workers = _env_int("UVICORN_WORKERS", default=1)
+
     uvicorn.run(
         "app.main:app",
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8090")),
-        reload=True,
-        workers=1,
+        reload=reload_enabled,
+        workers=workers,
     )
