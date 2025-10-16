@@ -1,5 +1,27 @@
 # app/run.py
-import sys, asyncio, os
+import sys
+import asyncio
+import os
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse boolean feature flags from the environment."""
+
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
 
 # добавляем РОДИТЕЛЯ проекта в sys.path
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
