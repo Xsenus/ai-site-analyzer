@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Body, Query
@@ -17,6 +17,8 @@ from app.api.schemas import (
     AnalyzeFromJsonRequest,
     AnalyzeFromJsonResponse,
     CatalogItem,
+    CatalogItemsPayload,
+    CatalogVector,
     DbPayload,
     IbMatchItem,
     IbMatchRequest,
@@ -270,31 +272,67 @@ def _tick(t0: dt.datetime) -> int:
     return int((dt.datetime.now() - t0).total_seconds() * 1000)
 
 
-def _catalog_items_to_dict(items: Optional[List[CatalogItem]]) -> List[Dict[str, Any]]:
+def _catalog_items_to_dict(
+    items: Optional[CatalogItemsPayload | Sequence[CatalogItem]]
+) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     if not items:
         return normalized
 
-    for item in items:
-        vec = item.vec
-        vec_str: Optional[str] = None
-        if isinstance(vec, list):
-            try:
-                floats = [float(v) for v in vec]
-            except (TypeError, ValueError):
-                log.warning(
-                    "[analyze/json] catalog vector conversion failed id=%s name=%r", item.id, item.name
-                )
-                floats = []
-            vec_str = format_pgvector(floats) if floats else "[]"
-        elif isinstance(vec, str):
-            vec_str = vec.strip() or None
-        else:
-            vec_str = None
+    source: Iterable[CatalogItem]
+    if isinstance(items, CatalogItemsPayload):
+        source = items.items
+    else:
+        source = items
 
-        normalized.append({"id": item.id, "name": item.name, "vec": vec_str})
+    for item in source:
+        vec_literal = _normalize_catalog_vector(
+            item.vec,
+            context=f"id={item.id} name={item.name!r}",
+        )
+        normalized.append({"id": item.id, "name": item.name, "vec": vec_literal})
 
     return normalized
+
+
+def _normalize_catalog_vector(
+    vec: CatalogVector | Sequence[float] | str | Dict[str, Any] | None,
+    *,
+    context: str,
+) -> Optional[str]:
+    values: Optional[List[float]] = None
+    literal: Optional[str] = None
+
+    if isinstance(vec, CatalogVector):
+        try:
+            values, literal = vec.normalized()
+        except (TypeError, ValueError):
+            log.warning("[analyze/json] catalog vector invalid %s", context)
+            values, literal = None, None
+    elif isinstance(vec, (list, tuple)):
+        try:
+            values = [float(v) for v in vec]
+        except (TypeError, ValueError):
+            log.warning("[analyze/json] catalog vector conversion failed %s", context)
+            values = None
+    elif isinstance(vec, str):
+        literal = vec.strip() or None
+    elif isinstance(vec, dict):
+        try:
+            model = CatalogVector.model_validate(vec)
+        except Exception:  # pragma: no cover - pydantic сообщение уже достаточное
+            log.warning("[analyze/json] catalog vector dict invalid %s", context)
+            return None
+        return _normalize_catalog_vector(model, context=context)
+    elif vec is not None:
+        log.warning("[analyze/json] catalog vector unsupported type %s value=%r", context, vec)
+        return None
+
+    if values is None:
+        return literal
+    if not values:
+        return literal or "[]"
+    return literal or format_pgvector(values)
 
 
 def _vector_payload(values: Optional[List[float]], literal: Optional[str]) -> VectorPayload:
@@ -1577,7 +1615,8 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         "equip_enriched": len(equip_payload),
     }
 
-    answer_payload = answer if body.return_answer_raw else None
+    answer_payload = answer
+    answer_raw = answer if body.return_answer_raw else None
     parsed_with_title = parsed | {
         "PRODCLASS_TITLE": prodclass_title,
         "LLM_ANSWER": answer_payload,
@@ -1591,6 +1630,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         prodclass=prodclass_payload,
         goods_types=goods_payload,
         equipment=equip_payload,
+        llm_answer=answer_payload,
     )
 
     log.info(
@@ -1612,7 +1652,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         pars_id=pars_id,
         prompt=(prompt if body.return_prompt else None),
         prompt_len=len(prompt),
-        answer_raw=(answer if body.return_answer_raw else None),
+        answer_raw=answer_raw,
         answer_len=len(answer or ""),
         description=description_text,
         parsed=parsed_with_title,

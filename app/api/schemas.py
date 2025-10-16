@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.equipment_selection import ClientRow, EquipmentSelectionResponse
 
@@ -28,10 +28,54 @@ class AnalyzeResponse(BaseModel):
     duration_ms: int
 
 
+class CatalogVector(BaseModel):
+    """Гибкое представление вектора из внешнего сервиса."""
+
+    values: List[float] | None = None
+    literal: str | None = None
+
+    def normalized(self) -> tuple[Optional[List[float]], Optional[str]]:
+        """Возвращает (значения, текстовое представление) с приведением типов."""
+
+        floats: Optional[List[float]]
+        if self.values is None:
+            floats = None
+        else:
+            floats = [float(v) for v in self.values]
+
+        literal = (self.literal or "").strip() or None
+        return floats, literal
+
+
 class CatalogItem(BaseModel):
     id: int
     name: str
-    vec: List[float] | str | None = None
+    vec: CatalogVector | List[float] | str | None = None
+
+
+class CatalogItemsPayload(BaseModel):
+    """Совместимый контейнер для каталога (list либо объект с items)."""
+
+    items: List[CatalogItem] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, value: Any) -> Dict[str, Any]:  # type: ignore[override]
+        if value is None:
+            return {"items": []}
+        if isinstance(value, dict):
+            if "items" in value:
+                payload = value.get("items")
+                if payload is None:
+                    return {"items": []}
+                return {"items": payload}
+            # допускаем случай, когда передали одиночный элемент-словарь
+            if {"id", "name"} <= set(value.keys()):
+                return {"items": [value]}
+            raise TypeError("catalog object must contain 'items' list")
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return {"items": list(value)}
+        raise TypeError("catalog must be list or object with items")
 
 
 class AnalyzeFromJsonRequest(BaseModel):
@@ -40,8 +84,8 @@ class AnalyzeFromJsonRequest(BaseModel):
     chat_model: str | None = None
     embed_model: str | None = None
     company_id: int | None = Field(default=None, ge=1)
-    goods_catalog: List[CatalogItem] | None = None
-    equipment_catalog: List[CatalogItem] | None = None
+    goods_catalog: CatalogItemsPayload | None = None
+    equipment_catalog: CatalogItemsPayload | None = None
     return_prompt: bool = False
     return_answer_raw: bool = True
 
@@ -73,6 +117,7 @@ class DbPayload(BaseModel):
     prodclass: ProdclassPayload
     goods_types: List[MatchedItemPayload]
     equipment: List[MatchedItemPayload]
+    llm_answer: str | None = None
 
 
 class AnalyzeFromJsonResponse(BaseModel):
