@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services import analyzer
-from app.api import routes
+from app.api.handlers import analyze_json as analyze_json_routes
 from app.api.schemas import AnalyzeFromJsonRequest, CatalogItem, CatalogItemsPayload
 
 
@@ -63,7 +63,7 @@ async def test_parse_openai_answer_merges_goods_type(monkeypatch):
 
     parsed = await analyzer.parse_openai_answer(answer, "текст", "embed-model")
 
-    assert parsed["GOODS_TYPE_LIST"] == ["Тип А", "Товар Б", "Товар А"]
+    assert parsed["GOODS_TYPE_LIST"] == ["Тип А", "Товар Б"]
     assert parsed["GOODS_TYPE_SOURCE"] == "GOODS_TYPE"
 
 
@@ -90,9 +90,27 @@ async def test_parse_openai_answer_prodclass_source_name(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_parse_openai_answer_requires_embed_model_for_score(monkeypatch):
-    async def fail_embeddings(*_args, **_kwargs):  # pragma: no cover - should not run
-        raise AssertionError("embeddings should not be invoked")
+async def test_parse_openai_answer_missing_embed_model_sets_default_score():
+    answer = (
+        "[DESCRIPTION]=[Описание]\n"
+        "[PRODCLASS]=[41]\n"
+        "[PRODCLASS_SCORE]=[]\n"
+        "[EQUIPMENT_SITE]=[Станок]\n"
+        "[GOODS]=[Товар]\n"
+        "[GOODS_TYPE]=[Тип]\n"
+    )
+
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "")
+
+    assert parsed["PRODCLASS_SCORE"] == 0.0
+    assert parsed["PRODCLASS_SCORE_SOURCE"] == "not_available"
+    assert "PRODCLASS_SCORE_ERROR" in parsed
+
+
+@pytest.mark.anyio
+async def test_parse_openai_answer_fallback_failure_sets_default(monkeypatch):
+    async def fail_embeddings(*_args, **_kwargs):  # pragma: no cover - stub failure
+        raise RuntimeError("boom")
 
     monkeypatch.setattr(analyzer, "_embeddings", fail_embeddings)
 
@@ -105,8 +123,32 @@ async def test_parse_openai_answer_requires_embed_model_for_score(monkeypatch):
         "[GOODS_TYPE]=[Тип]\n"
     )
 
-    with pytest.raises(ValueError, match="embed_model"):
-        await analyzer.parse_openai_answer(answer, "текст", "")
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "embed")
+
+    assert parsed["PRODCLASS_SCORE"] == 0.0
+    assert parsed["PRODCLASS_SCORE_SOURCE"] == "not_available"
+    assert parsed["PRODCLASS_SCORE_ERROR"].startswith("boom")
+
+
+@pytest.mark.anyio
+async def test_parse_openai_answer_filters_empty_equipment(monkeypatch):
+    async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+
+    answer = (
+        "[DESCRIPTION]=[Описание]\n"
+        "[PRODCLASS]=[41]\n"
+        "[PRODCLASS_SCORE]=[0.75]\n"
+        "[EQUIPMENT_SITE]=[нет; -; —; ;  ]\n"
+        "[GOODS]=[Товар]\n"
+        "[GOODS_TYPE]=[Тип]\n"
+    )
+
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "embed-model")
+
+    assert parsed["EQUIPMENT_LIST"] == []
 
 
 def test_ai_site_preview_formatting():
@@ -120,7 +162,7 @@ def test_ai_site_preview_formatting():
         }
     ]
 
-    preview = routes._ai_site_preview(
+    preview = analyze_json_routes._ai_site_preview(
         enriched_items,
         pars_id=123,
         name_key="goods_type",
@@ -150,7 +192,7 @@ def test_catalog_items_payload_accepts_object_with_vectors():
         }
     )
 
-    normalized = routes._catalog_items_to_dict(payload)
+    normalized = analyze_json_routes._catalog_items_to_dict(payload)
 
     assert normalized == [
         {"id": 1, "name": "A", "vec": "[0.1000000,0.2000000]"},
@@ -164,7 +206,7 @@ def test_catalog_items_to_dict_handles_plain_list():
         CatalogItem(id=2, name="Y", vec=None),
     ]
 
-    normalized = routes._catalog_items_to_dict(items)
+    normalized = analyze_json_routes._catalog_items_to_dict(items)
 
     assert normalized == [
         {"id": 1, "name": "X", "vec": "[0.5000000,0.6000000]"},
@@ -174,7 +216,7 @@ def test_catalog_items_to_dict_handles_plain_list():
 
 @pytest.mark.anyio
 async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
-    monkeypatch.setattr(routes, "build_prompt", lambda text: "PROMPT")
+    monkeypatch.setattr(analyze_json_routes, "build_prompt", lambda text: "PROMPT")
 
     async def fake_call_openai(prompt: str, model: str) -> str:
         assert prompt == "PROMPT"
@@ -216,10 +258,10 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
             for idx, text in enumerate(items)
         ]
 
-    monkeypatch.setattr(routes, "call_openai", fake_call_openai)
-    monkeypatch.setattr(routes, "parse_openai_answer", fake_parse)
-    monkeypatch.setattr(routes, "embed_single_text", fake_embed_single_text)
-    monkeypatch.setattr(routes, "enrich_by_catalog", fake_enrich)
+    monkeypatch.setattr(analyze_json_routes, "call_openai", fake_call_openai)
+    monkeypatch.setattr(analyze_json_routes, "parse_openai_answer", fake_parse)
+    monkeypatch.setattr(analyze_json_routes, "embed_single_text", fake_embed_single_text)
+    monkeypatch.setattr(analyze_json_routes, "enrich_by_catalog", fake_enrich)
 
     request = AnalyzeFromJsonRequest(
         pars_id=10,
@@ -230,7 +272,7 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
         return_answer_raw=False,
     )
 
-    response = await routes.analyze_from_json(request)
+    response = await analyze_json_routes.analyze_from_json(request)
 
     assert response.answer_raw is None
     assert response.db_payload.llm_answer == "LLM ANSWER"

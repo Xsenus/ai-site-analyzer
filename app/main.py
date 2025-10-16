@@ -1,14 +1,6 @@
 # app/main.py
 from __future__ import annotations
 
-# --- Windows async psycopg fix: must be set before creating event loop / DB engines ---
-import sys
-import asyncio
-
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-# ------------------------------------------------------------------------------
-
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -22,15 +14,11 @@ from starlette.responses import JSONResponse
 from app.config import settings
 from app.api.routes import router as api_router  # ваши /v1/... маршруты
 
-# БД: две базы с ленивой инициализацией
-from app.db.parsing import get_parsing_engine
-from app.db.postgres import get_postgres_engine
-
 # <<< ВАЖНО: импортируем схемы и логику на уровне модуля, чтобы Pydantic видел типы >>>
 from app.schemas.ai_search import AiSearchIn, AiEmbeddingOut
 from app.services.embeddings import embed_many
 
-# Доп. роутер из ТЗ (POST /api/ai-search и GET /api/ai-search/health)
+# Доп. роутер из ТЗ (POST /api/ai-search)
 try:
     from app.routers.ai_search import router as ai_search_router  # noqa: F401
     HAS_AI_SEARCH = True
@@ -104,20 +92,11 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 # ---------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Инициализация движков БД (если DSN заданы)
-    get_parsing_engine()
-    get_postgres_engine()
-    log.info("Startup complete: engines initialized (where DSN provided).")
+    log.info("Startup complete.")
     try:
         yield
     finally:
-        # Аккуратно закрываем коннекторы (если создавались)
-        parsing = get_parsing_engine()
-        pg = get_postgres_engine()
-        for eng in (parsing, pg):
-            if eng is not None:
-                await eng.dispose()
-        log.info("All database engines disposed.")
+        log.info("Shutdown complete.")
 
 
 # ---------------------------
@@ -160,10 +139,6 @@ def create_app() -> FastAPI:
 
     # --- Алиасы без префикса /api, реализованные напрямую (без вызова чужих хэндлеров) ---
     # Контракт: { "embedding": [...] }
-    @app.get("/ai-search/health")
-    async def _ai_health_alias():
-        return {"ok": True}
-
     @app.post("/ai-search", response_model=AiEmbeddingOut)
     async def _ai_search_alias(body: AiSearchIn):
         vectors = await embed_many([body.q], timeout=12.0)
@@ -175,11 +150,6 @@ def create_app() -> FastAPI:
     async def _favicon_alias() -> Response:
         """Return an empty favicon to avoid 404 noise in the logs."""
         return Response(content=b"", media_type="image/x-icon")
-
-    # (опционально) совместимость с Next по умолчанию: POST /
-    @app.post("/")
-    async def _compat_root(body: AiSearchIn):
-        return await _ai_search_alias(body)
 
     return app
 

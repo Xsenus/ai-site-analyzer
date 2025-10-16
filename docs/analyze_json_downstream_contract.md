@@ -21,18 +21,18 @@
 | `return_answer_raw` | `bool` | нет | Вернуть ли сырое сообщение LLM в верхнем уровне ответа (по умолчанию `true`). Даже при выключенном флаге текст дублируется в `parsed.LLM_ANSWER` и `db_payload.llm_answer`. |
 
 Определения типов можно посмотреть в коде схем: `AnalyzeFromJsonRequest`,
-`CatalogItemsPayload`, `CatalogItem`, `CatalogVector`【F:app/api/schemas.py†L41-L109】.
+`CatalogItemsPayload`, `CatalogItem`, `CatalogVector`【F:app/api/schemas.py†L8-L66】.
 
 Каталоги нормализуются helper-функцией `_catalog_items_to_dict`: она принимает
 массивы, словари `{ "items": [...] }` и одиночные элементы, приводя их к списку
 словари с ключами `id`, `name`, `vec`. Вектор поддерживает несколько вариантов:
 строка в формате `pgvector`, массив чисел либо объект с полями `values` и
 `literal`. При необходимости строковое представление генерируется автоматически.
-См. `_normalize_catalog_vector` и `_catalog_items_to_dict`【F:app/api/routes.py†L216-L334】.
+См. `_normalize_catalog_vector` и `_catalog_items_to_dict`【F:app/api/handlers/analyze_json.py†L66-L126】.
 
 ## 2. Структура ответа
 
-Ответ соответствует модели `AnalyzeFromJsonResponse`【F:app/api/schemas.py†L111-L170】.
+Ответ соответствует модели `AnalyzeFromJsonResponse`【F:app/api/schemas.py†L99-L114】.
 Ключевые блоки:
 
 ### 2.1. Верхний уровень
@@ -46,7 +46,7 @@
 | `parsed` | Полностью распарсенный ответ модели, дополненный служебными полями (`PRODCLASS_TITLE`, списки для превью). |
 | `prodclass` | Объект `ProdclassPayload` с выбранным классом, скором и источником оценки. |
 | `description_vector` | Объект `VectorPayload` с вектором описания: числовое значение (`values`), строка (`literal`) и размерность (`dim`). |
-| `goods_items`, `equipment_items` | Массивы `MatchedItemPayload` по товарам и оборудованию (см. ниже). |
+| `goods_items`, `equipment_items` | Массивы `MatchedItemPayload` по товарам и оборудованию (см. ниже). Заглушки вроде «нет» или «—» автоматически отбрасываются. |
 | `counts` | Служебные количества: сколько элементов пришло из LLM и сколько прошло матчинг. |
 | `timings` | Метрики по этапам обработки в миллисекундах. |
 | `catalogs` | Размеры переданных каталогов (`goods`, `equipment`). |
@@ -58,10 +58,13 @@
 
 * `id` — идентификатор класса из справочника `ib_prodclass`.
 * `title` — человекочитаемое название (подставляется по ID).
-* `score` — итоговый скор (0.00–1.00). Если модель не выдала значение, он
-  считается по эмбеддингам (`score_source=fallback_embeddings`).
-* `score_source` — `model_reply` или `fallback_embeddings`.
-* `source` — первоначальный источник ID (`PRODCLASS`).【F:app/api/routes.py†L1538-L1561】
+* `score` — итоговый скор (0.00–1.00). Если модель не выдала значение,
+  сервис пытается восстановить его по эмбеддингам (`score_source=fallback_embeddings`).
+  При недоступности эмбеддингов возвращается `0.0` с `score_source=not_available`.
+* `score_source` — `model_reply`, `fallback_embeddings` или `not_available`.
+  В последнем случае в `parsed.PRODCLASS_SCORE_ERROR` приходит текстовая причина
+  (например, отсутствие `embed_model` или ошибка расчёта эмбеддингов).
+* `source` — первоначальный источник ID (`PRODCLASS`).【F:app/api/handlers/analyze_json.py†L327-L334】
 
 ### 2.3. Структура `MatchedItemPayload`
 
@@ -73,13 +76,13 @@
 * `vector` — объект `VectorPayload` с рассчитанным эмбеддингом элемента. Здесь
   всегда присутствует `literal` (строка вида `[0.1,0.2,...]`). Размерность выводится
   по длине массива `values` (если сохранены). Формирование происходит в
-  `_matched_payload` и `_vector_payload`【F:app/api/routes.py†L320-L367】.
+  `_matched_payload` и `_vector_payload`【F:app/api/handlers/analyze_json.py†L129-L166】.
 
 ### 2.4. Структура `db_payload`
 
 Это основной блок, который downstream-сервис может использовать для записи в БД.
 Он повторяет сущности из верхнего уровня и гарантирует наличие всех необходимых
-полей.【F:app/api/routes.py†L1626-L1657】
+полей.【F:app/api/handlers/analyze_json.py†L442-L481】
 
 | Поле | Тип | Содержимое |
 | --- | --- | --- |

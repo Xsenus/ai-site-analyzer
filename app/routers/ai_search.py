@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -71,11 +71,6 @@ def _dedupe_rows(rows: Optional[List[dict | GoodsRow | EquipRow | ProdclassRow]]
             seen.add(rid)
             result.append(obj)
     return result
-
-
-@router.get("/health")
-async def health() -> Dict[str, bool]:
-    return {"ok": True}
 
 
 @router.post(
