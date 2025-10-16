@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import OrderedDict
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,6 +13,10 @@ from app.config import settings
 from app.models.ib_prodclass import IB_PRODCLASS
 
 _PRODCLASS_NAME_VECS_CACHE: Dict[str, Tuple[List[int], List[List[float]]]] = {}
+
+# Кэш на часто встречающиеся элементы каталогов, чтобы не пересчитывать эмбеддинги.
+_CATALOG_VECTOR_CACHE: "OrderedDict[Tuple[str, str], List[float]]" = OrderedDict()
+_CATALOG_VECTOR_CACHE_LIMIT = 256
 
 _EMPTY_ITEM_MARKERS = {
     "",
@@ -417,6 +422,28 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
 
 # ---------- matching to catalogs (с поддержкой вектора из БД) ----------
 
+def _catalog_cache_get(embed_model: str, text: str) -> Optional[List[float]]:
+    if not text:
+        return None
+    key = (embed_model, text)
+    try:
+        vec = _CATALOG_VECTOR_CACHE.pop(key)
+    except KeyError:
+        return None
+    _CATALOG_VECTOR_CACHE[key] = vec
+    return vec
+
+
+def _catalog_cache_put(embed_model: str, text: str, vec: List[float]) -> None:
+    if not text:
+        return
+    key = (embed_model, text)
+    _CATALOG_VECTOR_CACHE[key] = vec
+    _CATALOG_VECTOR_CACHE.move_to_end(key)
+    while len(_CATALOG_VECTOR_CACHE) > _CATALOG_VECTOR_CACHE_LIMIT:
+        _CATALOG_VECTOR_CACHE.popitem(last=False)
+
+
 async def enrich_by_catalog(
     items: List[str],
     catalog: List[Dict[str, Any]],  # каждый: {id, name, vec?} где vec — str|(None)
@@ -426,60 +453,83 @@ async def enrich_by_catalog(
     """
     Возвращает [{text, match_id, score, vec, vec_str}]
     - эмбеддинг для item считаем всегда
-    - для каталога: используем vec из БД, если есть, иначе считаем
+    - для каталога: используем vec из БД, если есть, иначе считаем (с учётом LRU-кэша)
+    - обработка каталога идёт батчами без хранения всех в памяти
     """
     if not items:
         return []
 
-    # векторы для items
+    cat_ids: List[int] = [int(c["id"]) for c in catalog]
+    cat_names: List[str] = [str(c.get("name") or "").strip() for c in catalog]
+
+    # векторы для items (их немного — оставляем в памяти до конца, т.к. они нужны в ответе)
     item_vecs = await _embeddings(items, embed_model)
 
-    # векторы каталога: пробуем взять из БД (vec), если нет — считаем
-    cat_ids: List[int] = [int(c["id"]) for c in catalog]
-    cat_names: List[str] = [str(c["name"]) for c in catalog]
+    best_match_idx: List[int] = [-1] * len(items)
+    best_match_cos: List[float] = [-1.0] * len(items)
 
-    cat_vecs: List[Optional[List[float]]] = []
-    need_compute_texts: List[str] = []
-    need_idx: List[int] = []
+    def _consider_catalog_vector(cat_index: int, cat_vec: Optional[List[float]]) -> None:
+        if cat_vec is None:
+            return
+        for item_idx, item_vec in enumerate(item_vecs):
+            cos = _cosine_lists(item_vec, cat_vec)
+            if cos > best_match_cos[item_idx]:
+                best_match_cos[item_idx] = cos
+                best_match_idx[item_idx] = cat_index
 
-    for idx, c in enumerate(catalog):
-        parsed = _parse_pgvector_text(str(c.get("vec") or ""))
-        if parsed is None:
-            need_compute_texts.append(cat_names[idx])
-            need_idx.append(idx)
-            cat_vecs.append(None)  # placeholder
-        else:
-            cat_vecs.append(parsed)
+    async def _process_pending(
+        pending_idx: List[int],
+        pending_names: List[str],
+    ) -> None:
+        if not pending_names:
+            return
+        embedded = await _embeddings(pending_names, embed_model)
+        for local_pos, cat_vec in enumerate(embedded):
+            idx = pending_idx[local_pos]
+            name = pending_names[local_pos]
+            _catalog_cache_put(embed_model, name, cat_vec)
+            _consider_catalog_vector(idx, cat_vec)
+        pending_idx.clear()
+        pending_names.clear()
 
-    if need_compute_texts:
-        computed = await _embeddings(need_compute_texts, embed_model)
-        ptr = 0
-        for idx in need_idx:
-            cat_vecs[idx] = computed[ptr]
-            ptr += 1
+    pending_to_embed_idx: List[int] = []
+    pending_to_embed_names: List[str] = []
 
-    # сопоставление
+    for idx, cat in enumerate(catalog):
+        literal_vec = _parse_pgvector_text(str(cat.get("vec") or ""))
+        if literal_vec is not None:
+            _consider_catalog_vector(idx, literal_vec)
+            continue
+
+        name = cat_names[idx]
+        cached = _catalog_cache_get(embed_model, name)
+        if cached is not None:
+            _consider_catalog_vector(idx, cached)
+            continue
+
+        if not name:
+            continue
+
+        pending_to_embed_idx.append(idx)
+        pending_to_embed_names.append(name)
+        if len(pending_to_embed_names) >= EMBED_BATCH_SIZE:
+            await _process_pending(pending_to_embed_idx, pending_to_embed_names)
+
+    await _process_pending(pending_to_embed_idx, pending_to_embed_names)
+
     out: List[Dict[str, Any]] = []
-    for i, text in enumerate(items):
-        v_item = item_vecs[i]
-        best_j = -1
-        best_cos = -1.0
-        for j, v_cat in enumerate(cat_vecs):
-            if v_cat is None:
-                continue
-            cos = _cosine_lists(v_item, v_cat)
-            if cos > best_cos:
-                best_cos = cos
-                best_j = j
-
-        if best_j < 0:
+    for item_idx, text in enumerate(items):
+        v_item = item_vecs[item_idx]
+        best_idx = best_match_idx[item_idx]
+        if best_idx < 0:
             out.append(
                 {"text": text, "match_id": None, "score": None, "vec": v_item, "vec_str": _to_vec_str(v_item)}
             )
             continue
 
+        best_cos = best_match_cos[item_idx]
         score = float(f"{(best_cos + 1.0) / 2.0:.2f}")
-        match_id: Optional[int] = int(cat_ids[best_j]) if score >= min_threshold else None
+        match_id: Optional[int] = int(cat_ids[best_idx]) if score >= min_threshold else None
 
         out.append(
             {
