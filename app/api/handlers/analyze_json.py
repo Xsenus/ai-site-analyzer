@@ -32,7 +32,7 @@ from app.utils.vectors import format_pgvector
 
 log = logging.getLogger("api.analyze_json")
 
-router = APIRouter()
+router = APIRouter(prefix="/v1/analyze", tags=["analyze-json"])
 
 
 def _clip(value: Optional[str], limit: int = 200) -> str:
@@ -203,7 +203,7 @@ def _ai_site_preview(
     return preview
 
 
-@router.post("/v1/analyze/json", response_model=AnalyzeFromJsonResponse)
+@router.post("/json", response_model=AnalyzeFromJsonResponse)
 async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResponse:
     """Run the analysis pipeline entirely in memory and return structured data."""
 
