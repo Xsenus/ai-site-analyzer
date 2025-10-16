@@ -55,7 +55,7 @@ ID.
 
 ### 2.2. Тело запроса
 
-Схема описана моделью `AnalyzeFromJsonRequest`【F:app/api/schemas.py†L81-L90】.
+Схема описана моделью `AnalyzeFromJsonRequest`【F:app/api/schemas.py†L57-L66】.
 Ключевые поля:
 
 | Поле | Обязательность | Описание |
@@ -63,8 +63,8 @@ ID.
 | `text_par` | Да | Текст сайта для анализа. |
 | `pars_id` | Нет | ID строки `pars_site` (используется в логах и далее в БД). |
 | `company_id` | Нет | ID компании для расширенных логов. |
-| `chat_model` | Нет | Название модели LLM. Если не указано, берётся из настроек (`settings.CHAT_MODEL`, по умолчанию `gpt-4o`).【F:app/api/routes.py†L1314-L1325】【F:app/config.py†L49-L66】 |
-| `embed_model` | Нет | Модель эмбеддингов. При отсутствии используется `settings.embed_model` (алиас к `OPENAI_EMBED_MODEL`).【F:app/api/routes.py†L1314-L1325】【F:app/config.py†L118-L140】 |
+| `chat_model` | Нет | Название модели LLM. Если не указано, берётся из настроек (`settings.CHAT_MODEL`, по умолчанию `gpt-4o`).【F:app/api/handlers/analyze_json.py†L217-L228】【F:app/config.py†L49-L66】 |
+| `embed_model` | Нет | Модель эмбеддингов. При отсутствии используется `settings.embed_model` (алиас к `OPENAI_EMBED_MODEL`).【F:app/api/handlers/analyze_json.py†L217-L228】【F:app/config.py†L118-L140】 |
 | `goods_catalog` | Нет | Каталог товаров — можно передать массив объектов `CatalogItem` либо объект `{ "items": [...] }`. |
 | `equipment_catalog` | Нет | Каталог оборудования — формат тот же, что и для `goods_catalog`. |
 | `return_prompt` / `return_answer_raw` | Нет | Флаги для отладки: вернуть ли сформированный промпт и «сырой» ответ LLM в верхнем уровне ответа. Даже если `return_answer_raw=false`, фактический текст сохраняется в `parsed.LLM_ANSWER` и `db_payload.llm_answer`. |
@@ -163,19 +163,19 @@ curl -X POST "https://your-host/v1/analyze/json" \
 3. Код ответа и краткую сводку `counts`/`timings` после успешного вызова.
 
 API само логирует весь внутренний пайплайн (построение промпта, вызов модели,
-парсинг, вектора, обогащение каталогами).【F:app/api/routes.py†L1330-L1541】
+парсинг, вектора, обогащение каталогами).【F:app/api/handlers/analyze_json.py†L233-L398】
 
 ## 3. Что приходит в ответ и как его обработать
 
-Ответ соответствует модели `AnalyzeFromJsonResponse`【F:app/api/schemas.py†L123-L138】.
-Основной блок для записи в базу — `db_payload`【F:app/api/schemas.py†L114-L121】. Он содержит:
+Ответ соответствует модели `AnalyzeFromJsonResponse`【F:app/api/schemas.py†L99-L114】.
+Основной блок для записи в базу — `db_payload`【F:app/api/schemas.py†L90-L96】. Он содержит:
 
 * `description` — итоговое описание компании.
 * `description_vector` — вектор описания (если текст не пустой и эмбеддинг
-  успешно посчитан).【F:app/api/routes.py†L1420-L1449】
-* `prodclass` — ID класса, скор, название, источник скора и способ определения ID.【F:app/api/routes.py†L1401-L1422】
+  успешно посчитан).【F:app/api/handlers/analyze_json.py†L336-L358】
+* `prodclass` — ID класса, скор, название, источник скора и способ определения ID.【F:app/api/handlers/analyze_json.py†L327-L334】
 * `goods_types` — список товаров с привязкой к каталогу и векторами.
-* `equipment` — аналогичный список оборудования.【F:app/api/routes.py†L1450-L1506】
+* `equipment` — аналогичный список оборудования.【F:app/api/handlers/analyze_json.py†L380-L409】
 * `llm_answer` — исходный ответ модели (возвращается, если `return_answer_raw=true`).
 
 Дополнительно полезны `counts`, `timings`, `catalogs` для мониторинга.
@@ -184,7 +184,7 @@ API само логирует весь внутренний пайплайн (п
 
 * `LLM_ANSWER` — оригинальный ответ модели (совпадает с `db_payload.llm_answer`).
 * `AI_SITE_GOODS_TYPES` и `AI_SITE_EQUIPMENT` — предпросмотр строк для таблиц `ai_site_goods_types` и `ai_site_equipment` с расчётными полями.
-  Эти структуры помогают сравнить будущие вставки с ожидаемыми данными из собственной логики записи.【F:app/api/routes.py†L1483-L1520】【F:app/api/routes.py†L1259-L1295】
+  Эти структуры помогают сравнить будущие вставки с ожидаемыми данными из собственной логики записи.【F:app/api/handlers/analyze_json.py†L411-L440】
 * `PRODCLASS_SOURCE` — способ определения класса производства (`model_reply`, `name_match`, `text_embedding_fallback`).
 * `GOODS_TYPE_SOURCE` — источник списка товаров (`GOODS_TYPE` из ответа модели или резервный `GOODS`).
 

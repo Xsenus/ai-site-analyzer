@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services import analyzer
-from app.api import routes
+from app.api.handlers import analyze_json as analyze_json_routes
 from app.api.schemas import AnalyzeFromJsonRequest, CatalogItem, CatalogItemsPayload
 
 
@@ -120,7 +120,7 @@ def test_ai_site_preview_formatting():
         }
     ]
 
-    preview = routes._ai_site_preview(
+    preview = analyze_json_routes._ai_site_preview(
         enriched_items,
         pars_id=123,
         name_key="goods_type",
@@ -150,7 +150,7 @@ def test_catalog_items_payload_accepts_object_with_vectors():
         }
     )
 
-    normalized = routes._catalog_items_to_dict(payload)
+    normalized = analyze_json_routes._catalog_items_to_dict(payload)
 
     assert normalized == [
         {"id": 1, "name": "A", "vec": "[0.1000000,0.2000000]"},
@@ -164,7 +164,7 @@ def test_catalog_items_to_dict_handles_plain_list():
         CatalogItem(id=2, name="Y", vec=None),
     ]
 
-    normalized = routes._catalog_items_to_dict(items)
+    normalized = analyze_json_routes._catalog_items_to_dict(items)
 
     assert normalized == [
         {"id": 1, "name": "X", "vec": "[0.5000000,0.6000000]"},
@@ -174,7 +174,7 @@ def test_catalog_items_to_dict_handles_plain_list():
 
 @pytest.mark.anyio
 async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
-    monkeypatch.setattr(routes, "build_prompt", lambda text: "PROMPT")
+    monkeypatch.setattr(analyze_json_routes, "build_prompt", lambda text: "PROMPT")
 
     async def fake_call_openai(prompt: str, model: str) -> str:
         assert prompt == "PROMPT"
@@ -216,10 +216,10 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
             for idx, text in enumerate(items)
         ]
 
-    monkeypatch.setattr(routes, "call_openai", fake_call_openai)
-    monkeypatch.setattr(routes, "parse_openai_answer", fake_parse)
-    monkeypatch.setattr(routes, "embed_single_text", fake_embed_single_text)
-    monkeypatch.setattr(routes, "enrich_by_catalog", fake_enrich)
+    monkeypatch.setattr(analyze_json_routes, "call_openai", fake_call_openai)
+    monkeypatch.setattr(analyze_json_routes, "parse_openai_answer", fake_parse)
+    monkeypatch.setattr(analyze_json_routes, "embed_single_text", fake_embed_single_text)
+    monkeypatch.setattr(analyze_json_routes, "enrich_by_catalog", fake_enrich)
 
     request = AnalyzeFromJsonRequest(
         pars_id=10,
@@ -230,7 +230,7 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
         return_answer_raw=False,
     )
 
-    response = await routes.analyze_from_json(request)
+    response = await analyze_json_routes.analyze_from_json(request)
 
     assert response.answer_raw is None
     assert response.db_payload.llm_answer == "LLM ANSWER"

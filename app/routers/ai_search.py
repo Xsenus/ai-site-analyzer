@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -22,6 +22,7 @@ from app.schemas.ai_search import (
     ErrorOut,
 )
 from app.services.embeddings import make_embedding_or_none, validate_dim, VECTOR_DIM
+from app.services.health import check_health
 from app.utils.rate_limit import SlidingWindowRateLimiter
 
 log = logging.getLogger("routers.ai_search")
@@ -74,8 +75,8 @@ def _dedupe_rows(rows: Optional[List[dict | GoodsRow | EquipRow | ProdclassRow]]
 
 
 @router.get("/health")
-async def health() -> Dict[str, bool]:
-    return {"ok": True}
+async def health() -> Dict[str, Any]:
+    return await check_health()
 
 
 @router.post(

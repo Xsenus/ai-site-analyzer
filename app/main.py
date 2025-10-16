@@ -29,6 +29,7 @@ from app.db.postgres import get_postgres_engine
 # <<< ВАЖНО: импортируем схемы и логику на уровне модуля, чтобы Pydantic видел типы >>>
 from app.schemas.ai_search import AiSearchIn, AiEmbeddingOut
 from app.services.embeddings import embed_many
+from app.services.health import check_health
 
 # Доп. роутер из ТЗ (POST /api/ai-search и GET /api/ai-search/health)
 try:
@@ -162,7 +163,7 @@ def create_app() -> FastAPI:
     # Контракт: { "embedding": [...] }
     @app.get("/ai-search/health")
     async def _ai_health_alias():
-        return {"ok": True}
+        return await check_health()
 
     @app.post("/ai-search", response_model=AiEmbeddingOut)
     async def _ai_search_alias(body: AiSearchIn):
