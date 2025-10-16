@@ -37,8 +37,23 @@ _EMPTY_ITEM_MARKERS = {
     "—",
 }
 
-# Клиент OpenAI (async)
-oai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+_oai_client: AsyncOpenAI | None = None
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    """Return a cached AsyncOpenAI client or raise if key is missing."""
+
+    global _oai_client
+
+    if _oai_client is not None:
+        return _oai_client
+
+    api_key = settings.OPENAI_API_KEY
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not configured")
+
+    _oai_client = AsyncOpenAI(api_key=api_key)
+    return _oai_client
 
 # --- настройки сопоставления ---
 MATCH_THRESHOLD_EQUIPMENT: float = 0.45
@@ -81,7 +96,8 @@ GOODS_TYPE = Для каждого GOODS нужно присвоить свой 
 
 
 async def call_openai(prompt: str, chat_model: str) -> str:
-    resp = await oai.chat.completions.create(
+    client = _get_openai_client()
+    resp = await client.chat.completions.create(
         model=chat_model,
         temperature=0.0,
         messages=[
@@ -98,10 +114,11 @@ async def _embeddings(texts: List[str], embed_model: str) -> List[List[float]]:
     """
     Получить эмбеддинги для списка текстов батчами.
     """
+    client = _get_openai_client()
     all_vecs: List[List[float]] = []
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
         chunk = texts[i : i + EMBED_BATCH_SIZE]
-        resp = await oai.embeddings.create(model=embed_model, input=chunk)
+        resp = await client.embeddings.create(model=embed_model, input=chunk)
         all_vecs.extend([list(map(float, d.embedding)) for d in resp.data])
     return all_vecs
 
