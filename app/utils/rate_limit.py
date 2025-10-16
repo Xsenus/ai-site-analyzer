@@ -16,6 +16,21 @@ class SlidingWindowRateLimiter:
         self.max_per_minute = max_per_minute
         self.window_seconds = window_seconds
         self._hits: Dict[str, Deque[float]] = {}
+        self._last_gc: float = 0.0
+        # Чтобы не тратить время на постоянную очистку, выполняем её не чаще половины окна.
+        self._gc_interval: float = max(1.0, window_seconds / 2.0)
+
+    def _gc(self, *, now: float) -> None:
+        """Удаляет ключи, для которых все события устарели."""
+
+        if now - self._last_gc < self._gc_interval:
+            return
+
+        self._last_gc = now
+        cutoff = now - self.window_seconds
+        stale_keys = [key for key, hits in self._hits.items() if not hits or hits[-1] < cutoff]
+        for key in stale_keys:
+            self._hits.pop(key, None)
 
     def check_and_hit(self, key: str) -> Tuple[bool, int]:
         """
@@ -23,8 +38,12 @@ class SlidingWindowRateLimiter:
         При allowed=True происходит запись текущего хита.
         """
         now = time.time()
+        self._gc(now=now)
+
         wnd_start = now - self.window_seconds
-        dq = self._hits.setdefault(key, deque())
+        dq = self._hits.get(key)
+        if dq is None:
+            dq = self._hits[key] = deque()
         # почистить старые записи
         while dq and dq[0] < wnd_start:
             dq.popleft()
