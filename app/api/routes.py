@@ -13,6 +13,6 @@ router.include_router(analyze_json_router)
 
 @router.get("/health")
 async def health() -> Dict[str, Any]:
-    """Extended health-check that pings both databases."""
+    """Simple liveness probe used by monitoring and load balancers."""
 
     return await check_health()

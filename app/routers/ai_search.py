@@ -22,7 +22,6 @@ from app.schemas.ai_search import (
     ErrorOut,
 )
 from app.services.embeddings import make_embedding_or_none, validate_dim, VECTOR_DIM
-from app.services.health import check_health
 from app.utils.rate_limit import SlidingWindowRateLimiter
 
 log = logging.getLogger("routers.ai_search")
@@ -72,11 +71,6 @@ def _dedupe_rows(rows: Optional[List[dict | GoodsRow | EquipRow | ProdclassRow]]
             seen.add(rid)
             result.append(obj)
     return result
-
-
-@router.get("/health")
-async def health() -> Dict[str, Any]:
-    return await check_health()
 
 
 @router.post(

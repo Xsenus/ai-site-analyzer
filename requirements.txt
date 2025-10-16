@@ -3,10 +3,6 @@ fastapi>=0.115.2,<0.116
 starlette>=0.40.0,<0.41
 uvicorn[standard]>=0.30.6,<0.31
 
-# DB (psycopg3 вместо asyncpg)
-SQLAlchemy>=2.0.35,<2.1
-psycopg[binary]>=3.2.3,<3.3
-
 # HTTP / OpenAI
 httpx>=0.27.2,<0.28
 openai>=1.46.0,<2
