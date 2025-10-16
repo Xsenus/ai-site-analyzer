@@ -46,7 +46,7 @@
 | `parsed` | Полностью распарсенный ответ модели, дополненный служебными полями (`PRODCLASS_TITLE`, списки для превью). |
 | `prodclass` | Объект `ProdclassPayload` с выбранным классом, скором и источником оценки. |
 | `description_vector` | Объект `VectorPayload` с вектором описания: числовое значение (`values`), строка (`literal`) и размерность (`dim`). |
-| `goods_items`, `equipment_items` | Массивы `MatchedItemPayload` по товарам и оборудованию (см. ниже). |
+| `goods_items`, `equipment_items` | Массивы `MatchedItemPayload` по товарам и оборудованию (см. ниже). Заглушки вроде «нет» или «—» автоматически отбрасываются. |
 | `counts` | Служебные количества: сколько элементов пришло из LLM и сколько прошло матчинг. |
 | `timings` | Метрики по этапам обработки в миллисекундах. |
 | `catalogs` | Размеры переданных каталогов (`goods`, `equipment`). |
@@ -58,9 +58,12 @@
 
 * `id` — идентификатор класса из справочника `ib_prodclass`.
 * `title` — человекочитаемое название (подставляется по ID).
-* `score` — итоговый скор (0.00–1.00). Если модель не выдала значение, он
-  считается по эмбеддингам (`score_source=fallback_embeddings`).
-* `score_source` — `model_reply` или `fallback_embeddings`.
+* `score` — итоговый скор (0.00–1.00). Если модель не выдала значение,
+  сервис пытается восстановить его по эмбеддингам (`score_source=fallback_embeddings`).
+  При недоступности эмбеддингов возвращается `0.0` с `score_source=not_available`.
+* `score_source` — `model_reply`, `fallback_embeddings` или `not_available`.
+  В последнем случае в `parsed.PRODCLASS_SCORE_ERROR` приходит текстовая причина
+  (например, отсутствие `embed_model` или ошибка расчёта эмбеддингов).
 * `source` — первоначальный источник ID (`PRODCLASS`).【F:app/api/handlers/analyze_json.py†L327-L334】
 
 ### 2.3. Структура `MatchedItemPayload`

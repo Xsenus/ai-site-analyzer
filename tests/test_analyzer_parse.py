@@ -90,9 +90,27 @@ async def test_parse_openai_answer_prodclass_source_name(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_parse_openai_answer_requires_embed_model_for_score(monkeypatch):
-    async def fail_embeddings(*_args, **_kwargs):  # pragma: no cover - should not run
-        raise AssertionError("embeddings should not be invoked")
+async def test_parse_openai_answer_missing_embed_model_sets_default_score():
+    answer = (
+        "[DESCRIPTION]=[Описание]\n"
+        "[PRODCLASS]=[41]\n"
+        "[PRODCLASS_SCORE]=[]\n"
+        "[EQUIPMENT_SITE]=[Станок]\n"
+        "[GOODS]=[Товар]\n"
+        "[GOODS_TYPE]=[Тип]\n"
+    )
+
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "")
+
+    assert parsed["PRODCLASS_SCORE"] == 0.0
+    assert parsed["PRODCLASS_SCORE_SOURCE"] == "not_available"
+    assert "PRODCLASS_SCORE_ERROR" in parsed
+
+
+@pytest.mark.anyio
+async def test_parse_openai_answer_fallback_failure_sets_default(monkeypatch):
+    async def fail_embeddings(*_args, **_kwargs):  # pragma: no cover - stub failure
+        raise RuntimeError("boom")
 
     monkeypatch.setattr(analyzer, "_embeddings", fail_embeddings)
 
@@ -105,8 +123,32 @@ async def test_parse_openai_answer_requires_embed_model_for_score(monkeypatch):
         "[GOODS_TYPE]=[Тип]\n"
     )
 
-    with pytest.raises(ValueError, match="embed_model"):
-        await analyzer.parse_openai_answer(answer, "текст", "")
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "embed")
+
+    assert parsed["PRODCLASS_SCORE"] == 0.0
+    assert parsed["PRODCLASS_SCORE_SOURCE"] == "not_available"
+    assert parsed["PRODCLASS_SCORE_ERROR"].startswith("boom")
+
+
+@pytest.mark.anyio
+async def test_parse_openai_answer_filters_empty_equipment(monkeypatch):
+    async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+
+    answer = (
+        "[DESCRIPTION]=[Описание]\n"
+        "[PRODCLASS]=[41]\n"
+        "[PRODCLASS_SCORE]=[0.75]\n"
+        "[EQUIPMENT_SITE]=[нет; -; —; ;  ]\n"
+        "[GOODS]=[Товар]\n"
+        "[GOODS_TYPE]=[Тип]\n"
+    )
+
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "embed-model")
+
+    assert parsed["EQUIPMENT_LIST"] == []
 
 
 def test_ai_site_preview_formatting():

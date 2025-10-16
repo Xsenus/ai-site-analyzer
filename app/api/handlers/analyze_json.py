@@ -307,6 +307,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     prodclass_id = _as_int(parsed.get("PRODCLASS"))
     prodclass_score = _as_float(parsed.get("PRODCLASS_SCORE"))
     score_source = str(parsed.get("PRODCLASS_SCORE_SOURCE") or "model_reply")
+    score_error = parsed.get("PRODCLASS_SCORE_ERROR")
     prodclass_source = str(parsed.get("PRODCLASS_SOURCE") or "model_reply")
 
     if prodclass_id is None:
@@ -316,11 +317,14 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
             detail="PRODCLASS отсутствует или не является целым числом",
         )
     if prodclass_score is None:
-        log.error("[analyze/json] prodclass_score missing")
-        raise HTTPException(
-            status_code=400,
-            detail="PRODCLASS_SCORE отсутствует или не является числом",
+        log.warning(
+            "[analyze/json] prodclass_score missing — defaulting to 0 score_source=%s error=%s",
+            score_source,
+            score_error,
         )
+        prodclass_score = 0.0
+        if not score_source or score_source == "model_reply":
+            score_source = "not_available"
 
     prodclass_title = IB_PRODCLASS.get(prodclass_id, "—")
     prodclass_payload = ProdclassPayload(

@@ -13,6 +13,30 @@ from app.models.ib_prodclass import IB_PRODCLASS
 
 _PRODCLASS_NAME_VECS_CACHE: Dict[str, Tuple[List[int], List[List[float]]]] = {}
 
+_EMPTY_ITEM_MARKERS = {
+    "",
+    "нет",
+    "нет данных",
+    "не указано",
+    "не указаны",
+    "не указана",
+    "не предоставлено",
+    "не предоставлены",
+    "не предоставлен",
+    "отсутствует",
+    "отсутствуют",
+    "отсутствует оборудование",
+    "нет оборудования",
+    "нет товар",
+    "нет товара",
+    "нет товаров",
+    "none",
+    "n/a",
+    "na",
+    "-",
+    "—",
+}
+
 # Клиент OpenAI (async)
 oai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
@@ -163,6 +187,9 @@ def _normalize_item(text: str) -> str:
     # убираем типичные маркеры списков в начале строки
     cleaned = re.sub(r"^[\-–—•·\*\u2022]+", "", cleaned).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
+    marker = cleaned.casefold().strip(" .,!?:;\"'()[]{}")
+    if marker in _EMPTY_ITEM_MARKERS:
+        return ""
     return cleaned
 
 
@@ -327,27 +354,33 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
     data["PRODCLASS"] = prodclass_id
     data["PRODCLASS_SOURCE"] = prodclass_source
     score = _parse_score(data["PRODCLASS_SCORE_RAW"])
+    score_source = "model_reply"
+    fallback_error: Optional[str] = None
 
-    used_fallback = False
     if score is None:
         if not embed_model:
-            raise ValueError("embed_model is required to compute PRODCLASS_SCORE fallback")
+            fallback_error = "embed_model is required to compute PRODCLASS_SCORE fallback"
+        else:
+            try:
+                cls_name = IB_PRODCLASS.get(data["PRODCLASS"], f"Класс {data['PRODCLASS']}")
+                truncated_text = text_par_for_fallback[:6000]
+                vecs = await _embeddings([truncated_text, cls_name], embed_model)
+                if len(vecs) < 2:
+                    raise ValueError("embeddings response is incomplete")
+                v1, v2 = vecs[0], vecs[1]
+                sim = _cosine_lists(v1, v2)
+                score = float(f"{(sim + 1.0) / 2.0:.2f}")
+                score_source = "fallback_embeddings"
+            except Exception as exc:
+                fallback_error = str(exc)
 
-        cls_name = IB_PRODCLASS.get(data["PRODCLASS"], f"Класс {data['PRODCLASS']}")
-        truncated_text = text_par_for_fallback[:6000]
-        vecs = await _embeddings([truncated_text, cls_name], embed_model)
-        if len(vecs) < 2:
-            raise ValueError(
-                "Failed to compute PRODCLASS_SCORE fallback: embeddings response is incomplete"
-            )
-
-        v1, v2 = vecs[0], vecs[1]
-        sim = _cosine_lists(v1, v2)
-        score = float(f"{(sim + 1.0) / 2.0:.2f}")
-        used_fallback = True
-
+    if score is None:
+        score = 0.0
+        score_source = "not_available"
     data["PRODCLASS_SCORE"] = score
-    data["PRODCLASS_SCORE_SOURCE"] = "fallback_embeddings" if used_fallback else "model_reply"
+    data["PRODCLASS_SCORE_SOURCE"] = score_source
+    if fallback_error:
+        data["PRODCLASS_SCORE_ERROR"] = fallback_error
     data["EQUIPMENT_LIST"] = _split(data["EQUIPMENT_RAW"])
     data["GOODS_LIST"] = _split(data["GOODS_RAW"])
 
