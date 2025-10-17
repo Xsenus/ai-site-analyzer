@@ -46,6 +46,36 @@ async def test_parse_openai_answer_fallbacks_goods_type(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "description_line",
+    [
+        "[DESCRIPTION]=Профиль компании без квадратных скобок",
+        "[DESCRIPTION]: [Профиль компании c альтернативным разделителем]",
+        "[DESCRIPTION]=[Профиль компании без закрывающей скобки\nи дополнительной строкой",
+    ],
+)
+async def test_parse_openai_answer_tolerates_description_format(monkeypatch, description_line):
+    async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+
+    answer = (
+        f"{description_line}\n"
+        "[PRODCLASS]=[41]\n"
+        "[PRODCLASS_SCORE]=[0.80]\n"
+        "[EQUIPMENT_SITE]=[Станок]\n"
+        "[GOODS]=[Товар]\n"
+        "[GOODS_TYPE]=[Тип]\n"
+    )
+
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "embed-model")
+
+    assert parsed["DESCRIPTION"].startswith("Профиль компании")
+    assert parsed["PRODCLASS"] == 41
+
+
+@pytest.mark.anyio
 async def test_parse_openai_answer_merges_goods_type(monkeypatch):
     async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
         return [[1.0, 0.0, 0.0] for _ in texts]

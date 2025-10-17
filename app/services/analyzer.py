@@ -193,13 +193,70 @@ def _parse_pgvector_text(s: str) -> Optional[List[float]]:
 
 # ---------- parse model reply ----------
 
+_SECTION_BLOCK_RE = re.compile(
+    r"""
+    (?<!\S)                           # секция начинается с пробела или начала строки
+    \[\s*(?P<tag>[A-Z0-9_]+)\s*\]   # имя секции в квадратных скобках
+    (?P<content>.*?)                  # содержимое до следующей секции
+    (?=(?<!\S)\[[A-Z0-9_]+\s*\]|\Z)  # остановиться перед следующей секцией или концом текста
+    """,
+    flags=re.IGNORECASE | re.DOTALL | re.MULTILINE | re.VERBOSE,
+)
+
+
+def _strip_section_value(raw: str) -> str:
+    """Нормализует значение секции, поддерживая разные варианты форматирования."""
+
+    if not raw:
+        return ""
+
+    value = raw.lstrip()
+
+    if value and value[0] in "=:–-":
+        value = value[1:].lstrip()
+
+    if not value:
+        return ""
+
+    if value.startswith("["):
+        depth = 0
+        end_index: Optional[int] = None
+        for idx, ch in enumerate(value[1:], start=1):
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                if depth == 0:
+                    end_index = idx
+                    break
+                depth -= 1
+
+        if end_index is not None:
+            content = value[1:end_index].strip()
+            trailing = value[end_index + 1 :].strip()
+            if trailing:
+                # если после закрывающей скобки остался текст — добавляем его
+                content = f"{content} {trailing}" if content else trailing
+            return content.strip()
+
+        # закрывающая скобка не найдена — берём всё после первой откр. скобки
+        value = value[1:]
+
+    return value.strip()
+
+
 def _extract_section(tag: str, text: str, required: bool = True) -> Optional[str]:
-    m = re.search(rf"\[{re.escape(tag)}\]\s*=\s*\[(.*?)\]", text, flags=re.IGNORECASE | re.DOTALL)
-    if not m:
-        if required:
-            raise ValueError(f"Не удалось распарсить секцию [{tag}]")
-        return None
-    return m.group(1).strip()
+    tag_norm = tag.strip().upper()
+
+    for match in _SECTION_BLOCK_RE.finditer(text or ""):
+        if match.group("tag").strip().upper() != tag_norm:
+            continue
+
+        content = _strip_section_value(match.group("content") or "")
+        return content
+
+    if required:
+        raise ValueError(f"Не удалось распарсить секцию [{tag}]")
+    return None
 
 
 def _normalize_item(text: str) -> str:
