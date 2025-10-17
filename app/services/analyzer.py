@@ -443,7 +443,11 @@ async def _guess_prodclass_by_embeddings(text_par: str, embed_model: str) -> _Em
     if text_vec is None:
         return _EmbeddingProdclassGuess(text_vector=None, prodclass_id=None, score=None)
 
-    best_id, best_score = await _best_prodclass_by_text_vector(text_vec, embed_model)
+    try:
+        best_id, best_score = await _best_prodclass_by_text_vector(text_vec, embed_model)
+    except Exception:
+        best_id, best_score = None, None
+
     return _EmbeddingProdclassGuess(text_vector=text_vec, prodclass_id=best_id, score=best_score)
 
 
