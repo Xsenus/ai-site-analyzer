@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 from collections import OrderedDict
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,6 +44,27 @@ _EMPTY_ITEM_MARKERS = {
 }
 
 _oai_client: AsyncOpenAI | None = None
+
+
+@dataclass
+class _EmbeddingProdclassGuess:
+    """Предсказание класса производства на основе эмбеддингов."""
+
+    text_vector: Optional[List[float]]
+    prodclass_id: Optional[int]
+    score: Optional[float]
+
+
+@dataclass
+class _ProdclassResolution:
+    """Итоговое решение по классу производства после всех проверок."""
+
+    prodclass_id: int
+    source: str
+    text_vector: Optional[List[float]]
+    final_score: Optional[float]
+    embed_best_id: Optional[int]
+    embed_best_score: Optional[float]
 
 
 def _get_openai_client() -> AsyncOpenAI:
@@ -346,62 +368,138 @@ def _guess_prodclass_by_name(section_text: str) -> Optional[int]:
     return None
 
 
-async def _guess_prodclass_by_embeddings(text_par: str, embed_model: str) -> Optional[int]:
-    if not embed_model:
-        return None
-
-    payload = (text_par or "").strip()
-    if not payload:
-        return None
-
-    truncated = payload[:6000]
-    text_vec = await embed_single_text(truncated, embed_model)
-    if text_vec is None:
-        return None
-
+async def _ensure_prodclass_name_vectors(
+    embed_model: str,
+) -> Tuple[List[int], List[List[float]]]:
     cached = _PRODCLASS_NAME_VECS_CACHE.get(embed_model)
-    if cached is None:
-        prodclass_items = sorted(IB_PRODCLASS.items())
-        ids = [pid for pid, _ in prodclass_items]
-        names = [name for _, name in prodclass_items]
-        name_vecs = await _embeddings(names, embed_model)
-        cached = (ids, name_vecs)
-        _PRODCLASS_NAME_VECS_CACHE[embed_model] = cached
+    if cached is not None:
+        return cached
 
-    ids, name_vecs = cached
+    prodclass_items = sorted(IB_PRODCLASS.items())
+    ids = [pid for pid, _ in prodclass_items]
+    names = [name for _, name in prodclass_items]
+    name_vecs = await _embeddings(names, embed_model)
+    cached = (ids, name_vecs)
+    _PRODCLASS_NAME_VECS_CACHE[embed_model] = cached
+    return cached
+
+
+async def _score_prodclass_by_text_vector(
+    text_vector: Optional[List[float]], embed_model: str, prodclass_id: int
+) -> Optional[float]:
+    if text_vector is None:
+        return None
+
+    ids, name_vecs = await _ensure_prodclass_name_vectors(embed_model)
+    try:
+        idx = ids.index(prodclass_id)
+    except ValueError:
+        return None
+
+    cos = _cosine_lists(text_vector, name_vecs[idx])
+    return (cos + 1.0) / 2.0
+
+
+async def _best_prodclass_by_text_vector(
+    text_vector: Optional[List[float]], embed_model: str
+) -> Tuple[Optional[int], Optional[float]]:
+    if text_vector is None:
+        return None, None
+
+    ids, name_vecs = await _ensure_prodclass_name_vectors(embed_model)
 
     best_idx = -1
     best_cos = -1.0
     for idx, name_vec in enumerate(name_vecs):
-        cos = _cosine_lists(text_vec, name_vec)
+        cos = _cosine_lists(text_vector, name_vec)
         if cos > best_cos:
             best_cos = cos
             best_idx = idx
 
     if best_idx < 0:
-        return None
+        return None, None
 
     score = (best_cos + 1.0) / 2.0
     if score < 0.3:
-        return None
+        return None, None
 
-    return ids[best_idx]
+    return ids[best_idx], score
 
 
-async def _resolve_prodclass_id(section_text: str, text_par: str, embed_model: str) -> Tuple[int, str]:
-    digit_id = _parse_prodclass_id_from_digits(section_text)
-    if digit_id is not None:
-        return digit_id, "model_reply"
+async def _guess_prodclass_by_embeddings(text_par: str, embed_model: str) -> _EmbeddingProdclassGuess:
+    if not embed_model:
+        return _EmbeddingProdclassGuess(text_vector=None, prodclass_id=None, score=None)
 
-    name_id = _guess_prodclass_by_name(section_text)
-    if name_id is not None:
-        return name_id, "name_match"
+    payload = (text_par or "").strip()
+    if not payload:
+        return _EmbeddingProdclassGuess(text_vector=None, prodclass_id=None, score=None)
 
-    embed_id = await _guess_prodclass_by_embeddings(text_par, embed_model)
-    if embed_id is not None:
-        return embed_id, "text_embedding_fallback"
+    truncated = payload[:6000]
+    try:
+        text_vec = await embed_single_text(truncated, embed_model)
+    except Exception:
+        return _EmbeddingProdclassGuess(text_vector=None, prodclass_id=None, score=None)
 
-    raise ValueError("В секции [PRODCLASS] не найдено целое число ID")
+    if text_vec is None:
+        return _EmbeddingProdclassGuess(text_vector=None, prodclass_id=None, score=None)
+
+    best_id, best_score = await _best_prodclass_by_text_vector(text_vec, embed_model)
+    return _EmbeddingProdclassGuess(text_vector=text_vec, prodclass_id=best_id, score=best_score)
+
+
+async def _resolve_prodclass_id(
+    section_text: str, text_par: str, embed_model: str
+) -> _ProdclassResolution:
+    embed_guess = await _guess_prodclass_by_embeddings(text_par, embed_model)
+
+    prodclass_id = _parse_prodclass_id_from_digits(section_text)
+    source = "model_reply"
+
+    if prodclass_id is None:
+        name_id = _guess_prodclass_by_name(section_text)
+        if name_id is not None:
+            prodclass_id = name_id
+            source = "name_match"
+
+    if prodclass_id is None:
+        if embed_guess.prodclass_id is not None:
+            return _ProdclassResolution(
+                prodclass_id=embed_guess.prodclass_id,
+                source="text_embedding_fallback",
+                text_vector=embed_guess.text_vector,
+                final_score=embed_guess.score,
+                embed_best_id=embed_guess.prodclass_id,
+                embed_best_score=embed_guess.score,
+            )
+        raise ValueError("В секции [PRODCLASS] не найдено целое число ID")
+
+    final_score: Optional[float] = None
+
+    if embed_model and embed_guess.text_vector is not None:
+        candidate_score = await _score_prodclass_by_text_vector(
+            embed_guess.text_vector, embed_model, prodclass_id
+        )
+        final_score = candidate_score
+
+        if (
+            embed_guess.prodclass_id is not None
+            and embed_guess.score is not None
+            and embed_guess.prodclass_id != prodclass_id
+        ):
+            candidate_score_norm = candidate_score or 0.0
+            if embed_guess.score >= 0.55 and embed_guess.score >= candidate_score_norm + 0.1:
+                prodclass_id = embed_guess.prodclass_id
+                source = "text_embedding_override"
+                final_score = embed_guess.score
+
+    return _ProdclassResolution(
+        prodclass_id=prodclass_id,
+        source=source,
+        text_vector=embed_guess.text_vector,
+        final_score=final_score,
+        embed_best_id=embed_guess.prodclass_id,
+        embed_best_score=embed_guess.score,
+    )
 
 
 def _parse_score(s: Optional[str]) -> Optional[float]:
@@ -427,21 +525,46 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
     data["GOODS_RAW"] = _extract_section("GOODS", answer, required=True) or ""
     data["GOODS_TYPE_RAW"] = _extract_section("GOODS_TYPE", answer, required=True) or ""
 
-    prodclass_id, prodclass_source = await _resolve_prodclass_id(
+    resolution = await _resolve_prodclass_id(
         data["PRODCLASS_RAW"], text_par_for_fallback, embed_model
     )
-    data["PRODCLASS"] = prodclass_id
-    data["PRODCLASS_SOURCE"] = prodclass_source
+    data["PRODCLASS"] = resolution.prodclass_id
+    data["PRODCLASS_SOURCE"] = resolution.source
+    if resolution.embed_best_id is not None:
+        data["PRODCLASS_EMBED_GUESS"] = resolution.embed_best_id
+    if resolution.embed_best_score is not None:
+        data["PRODCLASS_EMBED_GUESS_SCORE"] = float(
+            f"{resolution.embed_best_score:.2f}"
+        )
+
     score = _parse_score(data["PRODCLASS_SCORE_RAW"])
     score_source = "model_reply"
     fallback_error: Optional[str] = None
 
+    if resolution.source in {"text_embedding_override", "text_embedding_fallback"}:
+        score = None
+        score_source = resolution.source
+
+    embedding_score_source: Optional[str] = None
+    if resolution.final_score is not None:
+        if resolution.source == "text_embedding_override":
+            embedding_score_source = "text_embedding_override"
+        elif resolution.source == "text_embedding_fallback":
+            embedding_score_source = "text_embedding_fallback"
+        else:
+            embedding_score_source = "text_embedding_verify"
+
     if score is None:
-        if not embed_model:
+        if resolution.final_score is not None:
+            score = float(f"{resolution.final_score:.2f}")
+            score_source = embedding_score_source or "text_embedding_verify"
+        elif not embed_model:
             fallback_error = "embed_model is required to compute PRODCLASS_SCORE fallback"
         else:
             try:
-                cls_name = IB_PRODCLASS.get(data["PRODCLASS"], f"Класс {data['PRODCLASS']}")
+                cls_name = IB_PRODCLASS.get(
+                    resolution.prodclass_id, f"Класс {resolution.prodclass_id}"
+                )
                 truncated_text = text_par_for_fallback[:6000]
                 vecs = await _embeddings([truncated_text, cls_name], embed_model)
                 if len(vecs) < 2:

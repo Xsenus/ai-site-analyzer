@@ -26,6 +26,7 @@ async def test_parse_openai_answer_fallbacks_goods_type(monkeypatch):
         return [[1.0, 0.0, 0.0] for _ in texts]
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+    analyzer._PRODCLASS_NAME_VECS_CACHE.clear()
 
     answer = (
         "[DESCRIPTION]=[Описание]\n"
@@ -40,7 +41,7 @@ async def test_parse_openai_answer_fallbacks_goods_type(monkeypatch):
 
     assert parsed["PRODCLASS"] == 41
     assert parsed["PRODCLASS_SOURCE"] == "model_reply"
-    assert parsed["PRODCLASS_SCORE_SOURCE"] == "fallback_embeddings"
+    assert parsed["PRODCLASS_SCORE_SOURCE"] == "text_embedding_verify"
     assert parsed["GOODS_TYPE_LIST"] == ["Товар А", "Товар Б"]
     assert parsed["GOODS_TYPE_SOURCE"] == "GOODS"
 
@@ -117,6 +118,42 @@ async def test_parse_openai_answer_prodclass_source_name(monkeypatch):
 
     assert parsed["PRODCLASS"] == 41
     assert parsed["PRODCLASS_SOURCE"] == "name_match"
+
+
+@pytest.mark.anyio
+async def test_parse_openai_answer_embedding_override(monkeypatch):
+    async def fake_embeddings(texts, embed_model):  # pragma: no cover - deterministic vectors
+        out = []
+        for text in texts:
+            marker = (text or "").casefold()
+            if "механообработ" in marker:
+                out.append([0.0, 1.0])
+            else:
+                out.append([1.0, 0.0])
+        return out
+
+    monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+    analyzer._PRODCLASS_NAME_VECS_CACHE.clear()
+
+    answer = (
+        "[DESCRIPTION]=[Описание]\n"
+        "[PRODCLASS]=[1]\n"
+        "[PRODCLASS_SCORE]=[0.10]\n"
+        "[EQUIPMENT_SITE]=[Станок]\n"
+        "[GOODS]=[Товар]\n"
+        "[GOODS_TYPE]=[Тип]"
+    )
+
+    site_text = "Компания выполняет механообработку деталей на станках с ЧПУ."
+
+    parsed = await analyzer.parse_openai_answer(answer, site_text, "embed-model")
+
+    assert parsed["PRODCLASS"] == 41
+    assert parsed["PRODCLASS_SOURCE"] == "text_embedding_override"
+    assert parsed["PRODCLASS_SCORE"] == 1.0
+    assert parsed["PRODCLASS_SCORE_SOURCE"] == "text_embedding_override"
+    assert parsed["PRODCLASS_EMBED_GUESS"] == 41
+    assert parsed["PRODCLASS_EMBED_GUESS_SCORE"] == 1.0
 
 
 @pytest.mark.anyio

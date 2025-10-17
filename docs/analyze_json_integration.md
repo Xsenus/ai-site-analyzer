@@ -8,6 +8,8 @@ downstream-системой.
 
 > ℹ️ Для подробного описания формата ответа и входных данных смотрите также
 > документ [Контракт сервиса анализа с downstream-записью](./analyze_json_downstream_contract.md).
+> Логику подбора `PRODCLASS` и работу эмбеддингов описывает отдельный файл
+> [Как сервис определяет класс производства](./prodclass_resolution.md).
 
 ## 1. Какие данные подготовить перед вызовом API
 
@@ -187,7 +189,8 @@ API само логирует весь внутренний пайплайн (п
 * `LLM_ANSWER` — оригинальный ответ модели (совпадает с `db_payload.llm_answer`).
 * `AI_SITE_GOODS_TYPES` и `AI_SITE_EQUIPMENT` — предпросмотр строк для таблиц `ai_site_goods_types` и `ai_site_equipment` с расчётными полями.
   Эти структуры помогают сравнить будущие вставки с ожидаемыми данными из собственной логики записи.【F:app/api/handlers/analyze_json.py†L411-L440】
-* `PRODCLASS_SOURCE` — способ определения класса производства (`model_reply`, `name_match`, `text_embedding_fallback`).
+* `PRODCLASS_SOURCE` — способ определения класса производства. Значения: `model_reply`, `name_match`, `text_embedding_override`, `text_embedding_fallback`.
+* `PRODCLASS_EMBED_GUESS`, `PRODCLASS_EMBED_GUESS_SCORE` — диагностика по эмбеддингам: какой класс подсказал текст сайта и с каким скором.
 * `GOODS_TYPE_SOURCE` — источник списка товаров (`GOODS_TYPE` из ответа модели или резервный `GOODS`).
 
 ### 3.1. Обновление `pars_site`
