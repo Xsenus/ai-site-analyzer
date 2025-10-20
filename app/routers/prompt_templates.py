@@ -66,7 +66,7 @@ def _response(
         error=error_text,
     )
 
-router = APIRouter(prefix="/v1/prompts", tags=["prompt-templates"])
+router = APIRouter(prefix="/v1/prompts", tags=["analyze-json"])
 
 
 @router.post(
