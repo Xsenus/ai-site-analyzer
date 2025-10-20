@@ -519,11 +519,15 @@ def _parse_score(s: Optional[str]) -> Optional[float]:
 async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_model: str) -> Dict[str, Any]:
     data: Dict[str, Any] = {}
     data["DESCRIPTION"] = _extract_section("DESCRIPTION", answer, required=True) or ""
+    data["DESCRIPTION_SCORE_RAW"] = _extract_section(
+        "DESCRIPTION_SCORE", answer, required=False
+    )
     data["PRODCLASS_RAW"] = _extract_section("PRODCLASS", answer, required=True) or ""
     data["PRODCLASS_SCORE_RAW"] = _extract_section("PRODCLASS_SCORE", answer, required=False)
     data["EQUIPMENT_RAW"] = _extract_section("EQUIPMENT_SITE", answer, required=True) or ""
     data["GOODS_RAW"] = _extract_section("GOODS", answer, required=True) or ""
     data["GOODS_TYPE_RAW"] = _extract_section("GOODS_TYPE", answer, required=True) or ""
+    data["OKVED_SCORE_RAW"] = _extract_section("OKVED_SCORE", answer, required=False)
 
     resolution = await _resolve_prodclass_id(
         data["PRODCLASS_RAW"], text_par_for_fallback, embed_model
@@ -597,6 +601,14 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
 
     data["GOODS_TYPE_LIST"] = goods_type_list
     data["GOODS_TYPE_SOURCE"] = goods_type_source
+
+    desc_score = _parse_score(data.get("DESCRIPTION_SCORE_RAW"))
+    if desc_score is not None:
+        data["DESCRIPTION_SCORE"] = desc_score
+
+    okved_score = _parse_score(data.get("OKVED_SCORE_RAW"))
+    if okved_score is not None:
+        data["OKVED_SCORE"] = okved_score
     return data
 
 

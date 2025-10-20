@@ -31,6 +31,12 @@ try:
 except Exception:
     HAS_SITE_PROFILE = False
 
+try:
+    from app.routers.prompt_templates import router as prompt_templates_router  # noqa: F401
+    HAS_PROMPT_TEMPLATES = True
+except Exception:
+    HAS_PROMPT_TEMPLATES = False
+
 
 # ---------------------------
 # Логирование
@@ -131,6 +137,13 @@ def create_app() -> FastAPI:
         from app.routers.site_profile import router as site_profile_router  # локальный импорт для ясности
 
         app.include_router(site_profile_router)
+
+    if HAS_PROMPT_TEMPLATES:
+        from app.routers.prompt_templates import (
+            router as prompt_templates_router,
+        )  # локальный импорт для ясности
+
+        app.include_router(prompt_templates_router)
 
     # Подключаем /api/ai-search, если модуль присутствует
     if HAS_AI_SEARCH:
