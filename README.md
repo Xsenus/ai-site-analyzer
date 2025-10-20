@@ -112,6 +112,7 @@ Uvicorn без изменения командной строки:
 
 - [Контракт сервиса анализа с downstream-записью](docs/analyze_json_downstream_contract.md)
 - [Рекомендации по интеграции `/v1/analyze/json`](docs/analyze_json_integration.md)
+- [Генерация промптов OpenAI](docs/prompt_templates.md)
 
 ## Полезные советы
 
