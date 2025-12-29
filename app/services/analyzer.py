@@ -46,6 +46,13 @@ _EMPTY_ITEM_MARKERS = {
 _oai_client: AsyncOpenAI | None = None
 
 
+def _sanitize(value: Optional[str]) -> str:
+    if not value:
+        return "—"
+    payload = value.strip()
+    return payload or "—"
+
+
 @dataclass
 class _EmbeddingProdclassGuess:
     """Предсказание класса производства на основе эмбеддингов."""
@@ -91,36 +98,47 @@ EMBED_BATCH_SIZE: int = 96
 # ---------- prompt & openai ----------
 
 def ib_prodclass_table_str() -> str:
-    lines = ["ID        Название класса производства"]
-    for k in sorted(IB_PRODCLASS):
-        lines.append(f"{k}\t{IB_PRODCLASS[k]}")
+    lines = [f'{k}:"{IB_PRODCLASS[k]}"' for k in sorted(IB_PRODCLASS)]
     return "\n".join(lines)
 
 
-def build_prompt(text_par: str) -> str:
+def build_prompt(text_par: str, company_name: str = "", okved: str = "") -> str:
+    company = _sanitize(company_name)
+    okved_value = _sanitize(okved)
+
     rules = """
+Запрос №1 в OpenAI если сайт доступен
 Ниже представлен текст с сайта компании.
+
 Напиши ответ в таком виде:
-[DESCRIPTION] =[текст]
-[PRODCLASS]=[ID класса производства ib_prodclass]
-[PRODCLASS_SCORE]=[уровень сходства с ib_prodclass]
+[DESCRIPTION] =[описание компании по сайту]
+[DESCRIPTION_SCORE] =[уровень соответствия содержимого сайта названием компании]
+[OKVED_SCORE] =[уровень соответствия содержимого сайта ОКВЭД компании]
+[PRODCLASS]=[ID класса производства ib_prodclass по содержимому сайта]
+[PRODCLASS_SCORE]=[уровень сходства с ib_prodclass по содержимому сайта]
 [EQUIPMENT_SITE]=[Оборудование1; Оборудование2; Оборудование3; и так далее]
 [GOODS]=[Товар/услуга1; Товар/услуга2; Товар/услуга3; и так далее]
 [GOODS_TYPE]=[ИмяТНВЭД1; ИмяТНВЭД2; ИмяТНВЭД3; и так далее]
 , где
-DESCRIPTION =[текст]
-PRODCLASS = ID класса производства ib_prodclass, к которому компания относится ближе всего
-PRODCLASS_SCORE= уровень смысловой связи (сходства) текста сайта компании с выбранным PRODCLASS; число с точкой в диапазоне 0.00–1.00.
+DESCRIPTION = описание компании по сайту
+DESCRIPTION_SCORE = уровень сходства текста сайта компании с названием компании {Company_name}; число с точкой в диапазоне 0.00–1.00;
+OKVED_SCORE = уровень сходства текста сайта компании с ОКВЭД компании {OKVED}; число с точкой в диапазоне 0.00–1.00;
+PRODCLASS = ID класса производства ib_prodclass(список ниже), который ближе всего по сходству с текстом сайта;
+PRODCLASS_SCORE= уровень смысловой связи (сходства) текста сайта компании с выбранным PRODCLASS; число с точкой в диапазоне 0.00–1.00;
 EQUIPMENT_SITE = Список детальных наименований производственного/технологического оборудования, который упоминается на сайте и с помощью которого компания производит товары и или выполняет услуги, но не которое продает или реализует;
-Пропускай наименования, которые слишком обширные, к примеру: «Промышленное оборудование», «Современная технологическая линия»,  "Высокотехнологические линии", "Современное оборудование" или близкие по смыслу. Либо добаляй к названию технологический процесс.
+Пропускай наименования, которые слишком обширные, к примеру: «Промышленное оборудование», «Современная технологическая линия», "Высокотехнологические линии", "Современное оборудование" или близкие по смыслу. Либо добавляй к названию технологический процесс.
 GOODS = Список товаров/услуг компании, который упоминается на сайте, которые она сама производит или реализует;
 GOODS_TYPE = Для каждого GOODS нужно присвоить свой ТНВЭД и указать наименование ТНВЭД без кода.
 Требования: текст и набор наименований для каждого параметра должен быть заключен в квадратные скобки [].
 Название переменной и набор данных пишется с новой строки.
 Отвечай строго без пояснений.
-"""
-    return f"{rules}\nТаблица ib_prodclass\n{ib_prodclass_table_str()}\nТекст с сайта компании: {text_par}"
+""".strip().replace("{Company_name}", company).replace("{OKVED}", okved_value)
 
+    return (
+        "{rules}\n\n"
+        "IB_PRODCLASS = {{\n{table}\n}}\n\n"
+        "Текст с сайта компании: {text}"
+    ).format(rules=rules, table=ib_prodclass_table_str(), text=text_par)
 
 async def call_openai(prompt: str, chat_model: str) -> str:
     client = _get_openai_client()
@@ -128,7 +146,10 @@ async def call_openai(prompt: str, chat_model: str) -> str:
         model=chat_model,
         temperature=0.0,
         messages=[
-            {"role": "system", "content": "Отвечай строго в 6 строках по заданному шаблону. Не добавляй пояснений."},
+            {
+                "role": "system",
+                "content": "Отвечай строго по заданному шаблону и не добавляй пояснений.",
+            },
             {"role": "user", "content": prompt},
         ],
     )
