@@ -182,3 +182,12 @@ Downstream-сервису достаточно сохранить содержи
 
 Эти сведения дают полное представление о том, что именно отправляет сервис
 анализа и какие форматы входных данных он поддерживает.
+
+## Дополнительные поля ответа (стоимость и биллинг)
+
+В `AnalyzeFromJsonResponse` добавлены необязательные поля:
+
+- `request_cost: { model, input_tokens, cached_input_tokens, output_tokens, cost_usd } | null`
+- `billing_summary: { currency, period_start, period_end, spent_usd, limit_usd, prepaid_credits_usd, remaining_usd } | null`
+
+Это расширение обратно совместимо: существующие интеграции, которые игнорируют неизвестные поля, продолжат работать без изменений.

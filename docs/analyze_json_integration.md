@@ -283,3 +283,26 @@ VALUES
 
 Следуя этим шагам, внешний сервис сможет безопасно использовать `/v1/analyze/json`
 и синхронизировать данные анализа с собственной базой.
+
+## 6. Новые поля стоимости и биллинга
+
+`/v1/analyze/json` теперь возвращает два дополнительных поля верхнего уровня:
+
+- `request_cost` — расчётная стоимость последнего запроса к LLM на основе `usage` и локальной таблицы цен модели.
+  - `model`, `input_tokens`, `cached_input_tokens`, `output_tokens`, `cost_usd`.
+- `billing_summary` — месячная сводка расходов из OpenAI Costs API (`/v1/organization/costs`), если настроен `OPENAI_ADMIN_KEY`.
+  - `currency`, `period_start`, `period_end`, `spent_usd`, `remaining_usd`.
+
+Важно: отсутствие `OPENAI_ADMIN_KEY` **не ломает** `/v1/analyze/json`; в этом случае `billing_summary` будет `null`.
+
+Также добавлен отдельный эндпоинт:
+
+- `GET /v1/billing/remaining?project_id=<optional>` — получить остаток лимита/кредитов за текущий месяц без запуска анализа сайта.
+
+Переменные окружения:
+
+- `OPENAI_ADMIN_KEY` — admin key организации OpenAI для доступа к org-level Costs API.
+- `BILLING_MONTHLY_LIMIT_USD` — месячный лимит расходов.
+- `BILLING_PREPAID_CREDITS_USD` — объём prepaid-кредитов (используется, если лимит не задан).
+- `BILLING_COSTS_BASE_URL` — базовый URL billing API, по умолчанию `https://api.openai.com/v1`.
+

@@ -38,6 +38,13 @@ except Exception:
     HAS_PROMPT_TEMPLATES = False
 
 
+try:
+    from app.routers.billing import router as billing_router  # noqa: F401
+    HAS_BILLING = True
+except Exception:
+    HAS_BILLING = False
+
+
 # ---------------------------
 # Логирование
 # ---------------------------
@@ -144,6 +151,11 @@ def create_app() -> FastAPI:
         )  # локальный импорт для ясности
 
         app.include_router(prompt_templates_router)
+
+    if HAS_BILLING:
+        from app.routers.billing import router as billing_router
+
+        app.include_router(billing_router)
 
     # Подключаем /api/ai-search, если модуль присутствует
     if HAS_AI_SEARCH:

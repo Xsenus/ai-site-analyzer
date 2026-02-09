@@ -325,10 +325,26 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
             for idx, text in enumerate(items)
         ]
 
-    monkeypatch.setattr(analyze_json_routes, "call_openai", fake_call_openai)
+    async def fake_call_openai_with_usage(prompt: str, model: str):
+        answer = await fake_call_openai(prompt, model)
+        return answer, {"input_tokens": 200, "output_tokens": 50, "input_tokens_details": {"cached_tokens": 20}}
+
+    async def fake_month_to_date_summary():
+        class S:
+            currency = "usd"
+            period_start = 1
+            period_end = 2
+            spent_usd = 12.3
+            limit_usd = 100.0
+            prepaid_credits_usd = None
+            remaining_usd = 87.7
+        return S()
+
+    monkeypatch.setattr(analyze_json_routes, "call_openai_with_usage", fake_call_openai_with_usage)
     monkeypatch.setattr(analyze_json_routes, "parse_openai_answer", fake_parse)
     monkeypatch.setattr(analyze_json_routes, "embed_single_text", fake_embed_single_text)
     monkeypatch.setattr(analyze_json_routes, "enrich_by_catalog", fake_enrich)
+    monkeypatch.setattr(analyze_json_routes, "month_to_date_summary", fake_month_to_date_summary)
 
     request = AnalyzeFromJsonRequest(
         pars_id=10,
@@ -347,3 +363,8 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
     assert response.db_payload.prodclass.id == 41
     assert response.db_payload.goods_types[0].vector.literal == "[0.2,0.4]"
     assert response.db_payload.equipment[0].vector.literal == "[0.2,0.4]"
+    assert response.request_cost is not None
+    assert response.request_cost.input_tokens == 200
+    assert response.request_cost.cached_input_tokens == 20
+    assert response.billing_summary is not None
+    assert response.billing_summary.remaining_usd == 87.7
