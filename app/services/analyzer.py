@@ -141,6 +141,11 @@ GOODS_TYPE = Для каждого GOODS нужно присвоить свой 
     ).format(rules=rules, table=ib_prodclass_table_str(), text=text_par)
 
 async def call_openai(prompt: str, chat_model: str) -> str:
+    answer, _usage = await call_openai_with_usage(prompt, chat_model)
+    return answer
+
+
+async def call_openai_with_usage(prompt: str, chat_model: str) -> tuple[str, dict[str, Any]]:
     client = _get_openai_client()
     resp = await client.chat.completions.create(
         model=chat_model,
@@ -153,7 +158,18 @@ async def call_openai(prompt: str, chat_model: str) -> str:
             {"role": "user", "content": prompt},
         ],
     )
-    return (resp.choices[0].message.content or "").strip()
+    answer = (resp.choices[0].message.content or "").strip()
+
+    usage_payload: dict[str, Any] = {}
+    usage = getattr(resp, "usage", None)
+    if usage is not None:
+        usage_payload = {
+            "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            "input_tokens_details": {"cached_tokens": 0},
+        }
+
+    return answer, usage_payload
 
 
 # ---------- embeddings & math ----------

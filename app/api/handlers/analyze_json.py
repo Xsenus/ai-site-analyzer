@@ -9,11 +9,13 @@ from fastapi import APIRouter, HTTPException
 from app.api.schemas import (
     AnalyzeFromJsonRequest,
     AnalyzeFromJsonResponse,
+    BillingSummaryPayload,
     CatalogItem,
     CatalogItemsPayload,
     CatalogVector,
     MatchedItemPayload,
     DbPayload,
+    RequestCostPayload,
     ProdclassPayload,
     VectorPayload,
 )
@@ -23,11 +25,13 @@ from app.services.analyzer import (
     MATCH_THRESHOLD_EQUIPMENT,
     MATCH_THRESHOLD_GOODS,
     build_prompt,
-    call_openai,
+    call_openai_with_usage,
     embed_single_text,
     enrich_by_catalog,
     parse_openai_answer,
 )
+from app.services.billing import month_to_date_summary
+from app.services.pricing import calculate_response_cost_usd
 from app.utils.vectors import format_pgvector
 
 log = logging.getLogger("api.analyze_json")
@@ -271,7 +275,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     )
 
     t_llm = dt.datetime.now()
-    answer = await call_openai(prompt, chat_model)
+    answer, usage = await call_openai_with_usage(prompt, chat_model)
     timings["llm_ms"] = _tick(t_llm)
     log.info(
         "[analyze/json] llm answer len=%s took_ms=%s",
@@ -466,6 +470,37 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         timings["total_ms"],
     )
 
+
+    usage_input_tokens = _as_int((usage or {}).get("input_tokens"), default=0) or 0
+    usage_output_tokens = _as_int((usage or {}).get("output_tokens"), default=0) or 0
+    input_details = (usage or {}).get("input_tokens_details")
+    usage_cached_input_tokens = 0
+    if isinstance(input_details, dict):
+        usage_cached_input_tokens = _as_int(input_details.get("cached_tokens"), default=0) or 0
+
+    request_cost = RequestCostPayload(
+        model=chat_model,
+        input_tokens=usage_input_tokens,
+        cached_input_tokens=usage_cached_input_tokens,
+        output_tokens=usage_output_tokens,
+        cost_usd=calculate_response_cost_usd(chat_model, usage or {}),
+    )
+
+    billing_summary_payload: BillingSummaryPayload | None = None
+    try:
+        billing_summary = await month_to_date_summary()
+        billing_summary_payload = BillingSummaryPayload(
+            currency=billing_summary.currency,
+            period_start=billing_summary.period_start,
+            period_end=billing_summary.period_end,
+            spent_usd=billing_summary.spent_usd,
+            limit_usd=billing_summary.limit_usd,
+            prepaid_credits_usd=billing_summary.prepaid_credits_usd,
+            remaining_usd=billing_summary.remaining_usd,
+        )
+    except Exception as exc:
+        log.warning("[analyze/json] billing summary unavailable: %s", exc)
+
     response = AnalyzeFromJsonResponse(
         pars_id=pars_id,
         prompt=prompt_payload,
@@ -481,6 +516,8 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         counts=counts,
         timings=timings,
         catalogs={"goods": len(goods_catalog), "equipment": len(equip_catalog)},
+        request_cost=request_cost,
+        billing_summary=billing_summary_payload,
         db_payload=db_payload,
     )
 

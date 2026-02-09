@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     # OpenAI / embeddings
     OPENAI_API_KEY: str | None = None
+    OPENAI_ADMIN_KEY: str | None = None
     CHAT_MODEL: str = "gpt-4o"
     OPENAI_EMBED_MODEL: str = Field(
         default="text-embedding-3-large",
@@ -36,6 +37,11 @@ class Settings(BaseSettings):
     EMBED_PREVIEW_CHARS: int = 160
     EMBED_BATCH_SIZE: int = 96
     EMBED_MAX_CHARS: int = 200_000
+
+    # Billing / costs
+    BILLING_MONTHLY_LIMIT_USD: float | None = None
+    BILLING_PREPAID_CREDITS_USD: float | None = None
+    BILLING_COSTS_BASE_URL: str = "https://api.openai.com/v1"
 
     model_config = SettingsConfigDict(
         env_file=".env",

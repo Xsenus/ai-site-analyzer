@@ -87,6 +87,24 @@ class MatchedItemPayload(BaseModel):
     vector: VectorPayload
 
 
+class RequestCostPayload(BaseModel):
+    model: str
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    cost_usd: float
+
+
+class BillingSummaryPayload(BaseModel):
+    currency: str
+    period_start: int
+    period_end: int
+    spent_usd: float
+    limit_usd: float | None = None
+    prepaid_credits_usd: float | None = None
+    remaining_usd: float | None = None
+
+
 class DbPayload(BaseModel):
     description: str
     description_vector: VectorPayload
@@ -111,4 +129,6 @@ class AnalyzeFromJsonResponse(BaseModel):
     counts: Dict[str, int]
     timings: Dict[str, int]
     catalogs: Dict[str, int]
+    request_cost: RequestCostPayload | None = None
+    billing_summary: BillingSummaryPayload | None = None
     db_payload: DbPayload
