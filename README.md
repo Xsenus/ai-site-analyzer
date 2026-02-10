@@ -146,6 +146,7 @@ OpenAPI-спека доступна по `/docs` после запуска се�
 
 - [Контракт сервиса анализа с downstream-записью](docs/analyze_json_downstream_contract.md)
 - [Рекомендации по интеграции `/v1/analyze/json`](docs/analyze_json_integration.md)
+- [Детальный сценарий анализа (с очередью и без)](docs/ai_analysis_flow_detailed.md)
 - [Генерация промптов OpenAI](docs/prompt_templates.md)
 - [AI Search: получение эмбеддингов и fallback-ответов](docs/ai_search.md)
 
