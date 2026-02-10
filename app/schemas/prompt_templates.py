@@ -69,6 +69,10 @@ class PromptTemplateResponse(BaseModel):
         None,
         description="Ответ OpenAI в сыром виде",
     )
+    raw_response: Optional[str] = Field(
+        None,
+        description="Обратная совместимость: raw-ответ модели (дублирует поле answer)",
+    )
     answer_len: int = Field(
         0,
         description="Количество символов в ответе OpenAI",
@@ -77,6 +81,13 @@ class PromptTemplateResponse(BaseModel):
     parsed: Optional[Dict[str, object]] = Field(
         None,
         description="Результат постобработки ответа OpenAI",
+    )
+    prodclass_by_okved: Optional[int] = Field(
+        None,
+        description=(
+            "Обратная совместимость: класс предприятия, определённый по ОКВЭД "
+            "(для /v1/prompts/site-unavailable)"
+        ),
     )
     started_at: dt.datetime = Field(
         ..., description="Время начала обработки в формате ISO 8601"
