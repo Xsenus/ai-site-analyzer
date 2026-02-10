@@ -62,6 +62,7 @@ def test_site_available_prompt_success(monkeypatch):
     assert isinstance(data["prompt"], str) and data["prompt"]
     assert data["prompt_len"] == len(data["prompt"])
     assert data["answer"].startswith("[DESCRIPTION]=")
+    assert data["raw_response"] == data["answer"]
     assert data["answer_len"] == len(data["answer"])
     assert data["parsed"] == {
         "DESCRIPTION": "Ответ",
@@ -69,6 +70,7 @@ def test_site_available_prompt_success(monkeypatch):
         "OKVED_SCORE": 0.81,
         "PRODCLASS": 41,
     }
+    assert data["prodclass_by_okved"] is None
     assert data["duration_ms"] >= 0
     steps = [event["step"] for event in data["events"]]
     assert steps == [
@@ -108,6 +110,7 @@ def test_site_available_prompt_error(monkeypatch):
     assert data["prompt"] is None
     assert data["prompt_len"] == 0
     assert data["answer"] is None
+    assert data["raw_response"] is None
     assert data["answer_len"] == 0
     assert any(event["status"] == "error" for event in data["events"])
     assert data["error"] == "broken prompt"
@@ -136,7 +139,9 @@ def test_site_unavailable_prompt_success(monkeypatch):
     assert isinstance(data["prompt"], str) and data["prompt"]
     assert data["prompt_len"] == len(data["prompt"])
     assert data["answer"] == "96"
+    assert data["raw_response"] == "96"
     assert data["parsed"] == {"PRODCLASS": 96}
+    assert data["prodclass_by_okved"] == 96
     assert data["timings"]
     assert data["chat_model"] == "gpt-4o"
     assert data["embed_model"] is None
@@ -168,5 +173,6 @@ def test_site_unavailable_prompt_error(monkeypatch):
     assert data["success"] is False
     assert data["prompt"] is None
     assert data["prompt_len"] == 0
+    assert data["raw_response"] is None
     assert any(event["status"] == "error" for event in data["events"])
     assert data["error"] == "no okved"

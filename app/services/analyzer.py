@@ -539,6 +539,13 @@ async def _resolve_prodclass_id(
     )
 
 
+SCORE_PRECISION = 4
+
+
+def _normalize_score(value: float, *, precision: int = SCORE_PRECISION) -> float:
+    return round(float(value), precision)
+
+
 def _parse_score(s: Optional[str]) -> Optional[float]:
     if not s:
         return None
@@ -550,7 +557,7 @@ def _parse_score(s: Optional[str]) -> Optional[float]:
     if 1.0 < val <= 100.0:
         val = val / 100.0
     val = max(0.0, min(1.0, val))
-    return float(f"{val:.2f}")
+    return _normalize_score(val)
 
 
 async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_model: str) -> Dict[str, Any]:
@@ -574,8 +581,8 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
     if resolution.embed_best_id is not None:
         data["PRODCLASS_EMBED_GUESS"] = resolution.embed_best_id
     if resolution.embed_best_score is not None:
-        data["PRODCLASS_EMBED_GUESS_SCORE"] = float(
-            f"{resolution.embed_best_score:.2f}"
+        data["PRODCLASS_EMBED_GUESS_SCORE"] = _normalize_score(
+            resolution.embed_best_score
         )
 
     score = _parse_score(data["PRODCLASS_SCORE_RAW"])
@@ -597,7 +604,7 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
 
     if score is None:
         if resolution.final_score is not None:
-            score = float(f"{resolution.final_score:.2f}")
+            score = _normalize_score(resolution.final_score)
             score_source = embedding_score_source or "text_embedding_verify"
         elif not embed_model:
             fallback_error = "embed_model is required to compute PRODCLASS_SCORE fallback"
@@ -612,7 +619,7 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
                     raise ValueError("embeddings response is incomplete")
                 v1, v2 = vecs[0], vecs[1]
                 sim = _cosine_lists(v1, v2)
-                score = float(f"{(sim + 1.0) / 2.0:.2f}")
+                score = _normalize_score((sim + 1.0) / 2.0)
                 score_source = "fallback_embeddings"
             except Exception as exc:
                 fallback_error = str(exc)
@@ -757,7 +764,7 @@ async def enrich_by_catalog(
             continue
 
         best_cos = best_match_cos[item_idx]
-        score = float(f"{(best_cos + 1.0) / 2.0:.2f}")
+        score = _normalize_score((best_cos + 1.0) / 2.0)
         match_id: Optional[int] = int(cat_ids[best_idx]) if score >= min_threshold else None
 
         out.append(

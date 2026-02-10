@@ -43,6 +43,7 @@ POST /v1/prompts/site-available
   "prompt": "...",
   "prompt_len": 12345,
   "answer": "[DESCRIPTION]=...",
+  "raw_response": "[DESCRIPTION]=...",
   "answer_len": 1300,
   "parsed": {
     "DESCRIPTION": "...",
@@ -98,6 +99,7 @@ POST /v1/prompts/site-available
 * `success` — признак успешного завершения конвейера. При значении `false` поле `error` содержит текст ошибки, а `prompt`, `answer` и `parsed` могут отсутствовать.
 * `prompt` — полный текст, который был отправлен в OpenAI. В шаблон включены разделы `DESCRIPTION`, `DESCRIPTION_SCORE`, `OKVED_SCORE`, `PRODCLASS`, `PRODCLASS_SCORE`, `EQUIPMENT_SITE`, `GOODS` и `GOODS_TYPE`, словарь `IB_PRODCLASS` с актуальными наименованиями классов и исходный текст сайта.
 * `answer` — необработанный ответ модели OpenAI.
+* `raw_response` — поле обратной совместимости (дублирует `answer`) для downstream-интеграций, которые читают старое имя поля.
 * `parsed` — результат постобработки: ключевые поля ответа с приведёнными оценками (`DESCRIPTION_SCORE`, `OKVED_SCORE`, `PRODCLASS`, списки оборудования и товаров, источник данных и т.д.).
 * `timings` — словарь длительностей отдельных этапов (`build_prompt_ms`, `openai_ms`, `parse_ms`).
 * `events` — хронологический список шагов с подробностями и длительностью.
@@ -133,10 +135,12 @@ POST /v1/prompts/site-unavailable
   "prompt": "...",
   "prompt_len": 2150,
   "answer": "96",
+  "raw_response": "96",
   "answer_len": 2,
   "parsed": {
     "PRODCLASS": 96
   },
+  "prodclass_by_okved": 96,
   "started_at": "2024-03-18T09:30:25.512000",
   "finished_at": "2024-03-18T09:30:25.600000",
   "duration_ms": 88,
@@ -177,7 +181,7 @@ POST /v1/prompts/site-unavailable
 }
 ```
 
-Поле `prompt` содержит инструкцию вернуть только одно число — идентификатор класса производства из справочника `IB_PRODCLASS`, который ближе всего к переданному ОКВЭД. Поле `parsed` содержит итоговый ID класса, а `timings`, `events` и `answer` позволяют проследить работу конвейера и диагностировать ошибки.
+Поле `prompt` содержит инструкцию вернуть только одно число — идентификатор класса производства из справочника `IB_PRODCLASS`, который ближе всего к переданному ОКВЭД. Поле `parsed` содержит итоговый ID класса. Для совместимости с интеграциями также возвращаются `raw_response` (копия `answer`) и плоское поле `prodclass_by_okved` (дублирует `parsed.PRODCLASS`). `timings`, `events` и `answer` позволяют проследить работу конвейера и диагностировать ошибки.
 
 Оба маршрута доступны после развёртывания приложения FastAPI и автоматически добавляются в OpenAPI‑спецификацию (Swagger UI) в группе `analyze-json`, рядом с базовым эндпоинтом `/v1/analyze/json`.
 

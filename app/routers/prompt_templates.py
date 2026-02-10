@@ -67,6 +67,7 @@ def _response(
     prompt: str | None,
     answer: Optional[str],
     parsed: Optional[Dict[str, Any]],
+    prodclass_by_okved: Optional[int],
     events: list[PromptTemplateEvent],
     timings: Dict[str, int],
     chat_model: Optional[str],
@@ -89,8 +90,10 @@ def _response(
         prompt=prompt if prompt else None,
         prompt_len=prompt_len,
         answer=answer if answer else None,
+        raw_response=answer if answer else None,
         answer_len=answer_len,
         parsed=parsed if parsed else None,
+        prodclass_by_okved=prodclass_by_okved,
         started_at=started,
         finished_at=finished,
         duration_ms=duration,
@@ -136,6 +139,7 @@ async def prompt_for_available_site(
             prompt=None,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=None,
@@ -181,6 +185,7 @@ async def prompt_for_available_site(
             prompt=None,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=chat_model,
@@ -203,6 +208,7 @@ async def prompt_for_available_site(
             prompt=prompt,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=None,
@@ -238,6 +244,7 @@ async def prompt_for_available_site(
             prompt=prompt,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=chat_model,
@@ -271,6 +278,7 @@ async def prompt_for_available_site(
             prompt=prompt,
             answer=answer,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=chat_model,
@@ -285,6 +293,7 @@ async def prompt_for_available_site(
         prompt=prompt,
         answer=answer,
         parsed=parsed,
+        prodclass_by_okved=None,
         events=events,
         timings=timings,
         chat_model=chat_model,
@@ -308,6 +317,7 @@ async def prompt_for_unavailable_site(
     prompt: Optional[str] = None
     answer: Optional[str] = None
     parsed: Optional[Dict[str, Any]] = None
+    prodclass_by_okved: Optional[int] = None
 
     okved = (payload.okved or "").strip()
     if not okved:
@@ -324,6 +334,7 @@ async def prompt_for_unavailable_site(
             prompt=None,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=None,
@@ -366,6 +377,7 @@ async def prompt_for_unavailable_site(
             prompt=None,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=chat_model,
@@ -388,6 +400,7 @@ async def prompt_for_unavailable_site(
             prompt=prompt,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=None,
@@ -423,6 +436,7 @@ async def prompt_for_unavailable_site(
             prompt=prompt,
             answer=None,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=chat_model,
@@ -437,6 +451,7 @@ async def prompt_for_unavailable_site(
             raise ValueError("Ответ не содержит идентификатора класса")
         prodclass_id = int(digits)
         parsed = {"PRODCLASS": prodclass_id}
+        prodclass_by_okved = prodclass_id
         duration = _event(
             events,
             step="parse_answer",
@@ -460,6 +475,7 @@ async def prompt_for_unavailable_site(
             prompt=prompt,
             answer=answer,
             parsed=None,
+            prodclass_by_okved=None,
             events=events,
             timings=timings,
             chat_model=chat_model,
@@ -474,6 +490,7 @@ async def prompt_for_unavailable_site(
         prompt=prompt,
         answer=answer,
         parsed=parsed,
+        prodclass_by_okved=prodclass_by_okved,
         events=events,
         timings=timings,
         chat_model=chat_model,

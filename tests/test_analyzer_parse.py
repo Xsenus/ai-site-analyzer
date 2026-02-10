@@ -20,6 +20,15 @@ def anyio_backend():
     return "asyncio"
 
 
+def test_parse_score_preserves_fractional_precision():
+    assert analyzer._parse_score("0.815") == 0.815
+    assert analyzer._parse_score("81.5") == 0.815
+
+
+def test_normalize_score_uses_4_digits():
+    assert analyzer._normalize_score(0.123456) == 0.1235
+
+
 @pytest.mark.anyio
 async def test_parse_openai_answer_fallbacks_goods_type(monkeypatch):
     async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
