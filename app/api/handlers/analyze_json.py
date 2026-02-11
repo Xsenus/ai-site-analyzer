@@ -289,7 +289,18 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         raise HTTPException(status_code=502, detail="LLM вернул пустой ответ")
 
     t_parse = dt.datetime.now()
-    parsed_obj: Any = await parse_openai_answer(answer, text_par, embed_model)
+    try:
+        parsed_obj: Any = await parse_openai_answer(answer, text_par, embed_model)
+    except (ValueError, KeyError, Exception) as exc:
+        timings["parse_ms"] = _tick(t_parse)
+        log.exception(
+            "[analyze/json] llm response parse failed took_ms=%s answer=%r error=%s",
+            timings["parse_ms"],
+            _clip(answer),
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=f"LLM response parse failed: {exc}") from exc
+
     timings["parse_ms"] = _tick(t_parse)
     if not isinstance(parsed_obj, dict):
         log.error("[analyze/json] parser returned non-dict type=%s", type(parsed_obj).__name__)
