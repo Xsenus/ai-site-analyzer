@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -11,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.config import settings
 from app.schemas.ai_search import (
     AiSearchIn,
     AiEmbeddingOut,
@@ -27,8 +27,8 @@ from app.utils.rate_limit import SlidingWindowRateLimiter
 log = logging.getLogger("routers.ai_search")
 
 # ENV-настройки
-AI_SEARCH_TIMEOUT = float(os.getenv("AI_SEARCH_TIMEOUT", "12.0") or "12.0")
-RATE_LIMIT_PER_MIN = int(os.getenv("AI_SEARCH_RATE_LIMIT_PER_MIN", "10") or "10")
+AI_SEARCH_TIMEOUT = settings.AI_SEARCH_TIMEOUT
+RATE_LIMIT_PER_MIN = settings.AI_SEARCH_RATE_LIMIT_PER_MIN
 
 # Инициализируем простой лимитер
 limiter = SlidingWindowRateLimiter(max_per_minute=RATE_LIMIT_PER_MIN, window_seconds=60)
@@ -74,7 +74,7 @@ def _dedupe_rows(rows: Optional[List[dict | GoodsRow | EquipRow | ProdclassRow]]
 
 
 @router.post(
-    "/ai-search",
+    "",
     responses={
         200: {
             "content": {
@@ -85,9 +85,10 @@ def _dedupe_rows(rows: Optional[List[dict | GoodsRow | EquipRow | ProdclassRow]]
         400: {"model": ErrorOut},
         429: {"model": ErrorOut},
         500: {"model": ErrorOut},
+        504: {"model": ErrorOut},
     },
 )
-async def ai_search(request: Request, payload: AiSearchIn) -> Union[AiEmbeddingOut, AiIdsOut, AiListsOut, JSONResponse]:
+async def ai_search(request: Request, payload: AiSearchIn) -> Union[AiEmbeddingOut, AiIdsOut, AiListsOut]:
     """
     Основной обработчик:
     1) Rate-limit
@@ -140,7 +141,7 @@ async def ai_search(request: Request, payload: AiSearchIn) -> Union[AiEmbeddingO
     except asyncio.TimeoutError:
         log.warning("ai-search timeout after %.1fs", AI_SEARCH_TIMEOUT)
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             content=ErrorOut(error="timeout").model_dump(),
         )
     except HTTPException:

@@ -377,3 +377,23 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
     assert response.request_cost.cached_input_tokens == 20
     assert response.billing_summary is not None
     assert response.billing_summary.remaining_usd == 87.7
+
+
+@pytest.mark.anyio
+async def test_analyze_json_returns_502_on_parse_failure(monkeypatch):
+    async def fake_llm(_prompt, _chat_model):
+        return "[DESCRIPTION]=[ok]", {"input_tokens": 1, "output_tokens": 1}
+
+    async def fail_parse(_answer, _text_par, _embed_model):
+        raise ValueError("bad structure")
+
+    monkeypatch.setattr(analyze_json_routes, "call_openai_with_usage", fake_llm)
+    monkeypatch.setattr(analyze_json_routes, "parse_openai_answer", fail_parse)
+
+    body = AnalyzeFromJsonRequest(text_par="sample", pars_id=1, company_id=1)
+
+    with pytest.raises(analyze_json_routes.HTTPException) as exc_info:
+        await analyze_json_routes.analyze_from_json(body)
+
+    assert exc_info.value.status_code == 502
+    assert str(exc_info.value.detail).startswith("LLM response parse failed:")
