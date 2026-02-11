@@ -1,175 +1,287 @@
 # AI Site Analyzer
 
-AI Site Analyzer — асинхронный сервис на FastAPI, который анализирует сайты и
-возвращает структурированный отчёт. Приложение работает полностью stateless:
-всё состояние передаётся в запросе и возвращается в ответе, поэтому подключение
-к базам данных не требуется. Сервис использует OpenAI для генерации отчётов и
-эмбеддингов и предоставляет вспомогательный эндпоинт `/api/ai-search` для
-получения векторных представлений текстов.
+AI Site Analyzer — stateless API-сервис на FastAPI для анализа контента сайтов,
+генерации структурированных полей для downstream-систем и получения
+эмбеддингов/профилей компании через OpenAI.
 
-## Основные возможности
+Сервис не хранит состояние между запросами: он получает входные данные,
+выполняет inference/обогащение и возвращает результат в ответе.
 
-- **Анализ сайтов без доступа к БД.** Основной эндпоинт `/v1/analyze/json`
-  реализован в `app/api/handlers/analyze_json.py` и возвращает
-  структурированный отчёт вместе с готовым `db_payload` для downstream-сервисов.
-- **Полностью stateless-архитектура.** Сервис работает только с входными
-  данными и возвращает результат в ответе — соединений с базами данных нет.
-- **Интеграция с OpenAI.** Модуль `app/services/analyzer.py` собирает промпт,
-  вызывает LLM и разбирает ответ, а `app/services/embeddings.py` отвечает за
-  получение эмбеддингов (внутренний сервис → OpenAI fallback).
-- **Сервис эмбеддингов `/api/ai-search`.** Реализован в
-  `app/routers/ai_search.py`, включает простой rate limit, нормализацию запросов
-  и возможность подключить внутренний провайдер эмбеддингов.
-- **Генерация промптов для отладки.** Эндпоинты `/v1/prompts/site-available` и
-  `/v1/prompts/site-unavailable` возвращают сформированный промпт, ответ модели
-  и телеметрию этапов, что помогает тестировать шаблоны без полного пайплайна.
-- **Единая конфигурация через `.env`.** Настройки описаны в `app/config.py` и
-  автоматически нормализуются (алиасы, значения по умолчанию, computed-поля).
+## Что делает сервис
 
-## Структура проекта
+- Анализирует текст сайта (`/v1/analyze/json`) и формирует:
+  - краткое описание компании;
+  - предполагаемый производственный класс (`prodclass`);
+  - списки товаров/услуг и оборудования;
+  - сопоставления с входными каталогами (если каталоги переданы);
+  - готовый `db_payload` для записи во внешнюю БД downstream-процессом.
+- Возвращает эмбеддинги запросов (`/ai-search` и `/api/ai-search/ai-search`).
+- Генерирует «длинный профиль компании + вектор» (`/v1/site-profile`).
+- Позволяет отлаживать prompt-пайплайн отдельными роутами
+  (`/v1/prompts/site-available`, `/v1/prompts/site-unavailable`).
+- Показывает сводку расходов OpenAI за текущий месяц (`/v1/billing/remaining`).
+
+---
+
+## Архитектура и ключевые модули
 
 ```text
 app/
-├── api/                # публичные REST-роуты и pydantic-схемы
-├── models/             # справочники/модели домена
-├── routers/            # дополнительные роутеры (ai-search, prompts)
-├── schemas/            # pydantic-схемы
-├── services/           # интеграция с OpenAI, логика анализа, эмбеддинги
-├── utils/              # вспомогательные утилиты (rate limiter и др.)
-├── config.py           # pydantic Settings для загрузки окружения
-├── logging_setup.py    # базовая настройка логирования
-└── main.py             # точка входа FastAPI-приложения
+├── main.py                    # сборка FastAPI-приложения, middleware, подключение роутов
+├── run.py                     # production-runner uvicorn с воркерами
+├── config.py                  # pydantic settings из .env
+│
+├── api/
+│   ├── routes.py              # health + подключение analyze handler
+│   ├── handlers/analyze_json.py
+│   └── schemas.py             # запросы/ответы analyze + billing payload
+│
+├── routers/
+│   ├── ai_search.py           # /api/ai-search/ai-search
+│   ├── site_profile.py        # /v1/site-profile
+│   ├── prompt_templates.py    # /v1/prompts/*
+│   └── billing.py             # /v1/billing/remaining
+│
+├── services/
+│   ├── analyzer.py            # prompt, вызов OpenAI, парсинг, матчинг каталогов
+│   ├── embeddings.py          # внутренний embed провайдер + fallback на OpenAI
+│   ├── site_profile.py        # генерация расширенного описания компании
+│   ├── billing.py             # вызовы OpenAI Costs API
+│   ├── pricing.py             # оценка стоимости запроса по usage
+│   └── health.py              # ответ health check
+│
+├── schemas/                   # pydantic-схемы ai_search/site_profile/prompt_templates
+├── models/ib_prodclass.py     # словарь классов производства
+└── utils/                     # rate limiter и форматирование векторов
 ```
+
+Подробная «карта выполнения» доступна в отдельном документе:
+[docs/how_it_works.md](docs/how_it_works.md).
+
+---
 
 ## Быстрый старт
 
-1. **Python.** Требуется Python 3.11+.
-2. **Зависимости.** Установите пакеты: `pip install -r requirements.txt`.
-3. **Переменные окружения.** Скопируйте пример и укажите свои значения:
-   ```bash
-   cp .env.example .env
-   ```
-   Минимальный набор — ключ OpenAI. Полный список переменных приведён ниже.
-4. **Запуск.** Для локальной разработки удобно использовать Uvicorn:
-   ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
-   ```
-   В продакшене предпочтительнее запуск через наш раннер, чтобы единообразно
-   управлять воркерами и параметрами перезапуска:
-   ```bash
-   python -m app.run
-   ```
+### 1) Требования
 
-После запуска основное приложение доступно на `http://localhost:8090`.
+- Python 3.11+
+- доступ к OpenAI API (для большинства сценариев)
 
-## Обзор API
+### 2) Установка
 
-| Маршрут | Назначение | Документация |
-| --- | --- | --- |
-| `GET /health` | Простой health-check. | — |
-| `POST /v1/analyze/json` | Основной анализ сайта, возвращает `db_payload` и телеметрию. | [Контракт](docs/analyze_json_downstream_contract.md), [Интеграция](docs/analyze_json_integration.md) |
-| `POST /v1/prompts/site-available` | Отладочный маршрут: строит промпт по тексту сайта и вызывает LLM. | [Промпты](docs/prompt_templates.md) |
-| `POST /v1/prompts/site-unavailable` | Отладочный маршрут для случая, когда доступен только ОКВЭД. | [Промпты](docs/prompt_templates.md) |
-| `POST /api/ai-search` | Получение эмбеддинга или fallback-ответов при матчинге текстов. | [AI Search](docs/ai_search.md) |
-| `GET /v1/billing/remaining` | Сводка расходов за текущий месяц и расчёт остатка лимита/кредитов. | — |
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+```
 
-OpenAPI-спека доступна по `/docs` после запуска сервиса.
+### 3) Минимальная конфигурация
 
-## Переменные окружения раннера
+Достаточно задать:
 
-Модуль `app.run` поддерживает переменные окружения для настройки Uvicorn без
-изменения командной строки:
+```dotenv
+OPENAI_API_KEY=...
+CHAT_MODEL=gpt-4o
+OPENAI_EMBED_MODEL=text-embedding-3-large
+VECTOR_DIM=3072
+```
 
-| Переменная | Назначение | Значение по умолчанию |
-| --- | --- | --- |
-| `HOST` | Адрес привязки сервера | `0.0.0.0` |
-| `PORT` | Порт HTTP | `8090` |
-| `WORKERS` | Количество воркеров Uvicorn | `1` |
-| `UVICORN_RELOAD` | Горячая перезагрузка при изменении файлов | `false` |
+### 4) Запуск
 
-> ⚠️ При включённом `UVICORN_RELOAD` Uvicorn ограничивает количество воркеров до
-> одного. Раннер автоматически приведёт `WORKERS` к `1`, если вы включили
-> перезагрузку.
+Для разработки:
 
-## Ключевые переменные `.env`
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
+```
 
-| Переменная | Назначение |
-| --- | --- |
-| `OPENAI_API_KEY` | Ключ OpenAI для генерации отчётов и эмбеддингов. |
-| `OPENAI_ADMIN_KEY` | Admin API Key организации для `Costs API` (`/v1/organization/costs`). |
-| `CHAT_MODEL` | Модель диалога для анализа (по умолчанию `gpt-4o`). |
-| `OPENAI_EMBED_MODEL` | Модель эмбеддингов (по умолчанию `text-embedding-3-large`). |
-| `INTERNAL_EMBED_URL` | URL внутреннего сервиса эмбеддингов (опционально). |
-| `AI_SEARCH_TIMEOUT` | Таймаут `POST /api/ai-search` в секундах. |
-| `AI_SEARCH_RATE_LIMIT_PER_MIN` | Лимит запросов `/api/ai-search` в минуту. |
-| `CORS_ALLOW_*` | Настройки CORS (origins, methods, headers, credentials). |
-| `LOG_LEVEL` | Уровень логирования FastAPI-приложения. |
-| `BILLING_MONTHLY_LIMIT_USD` | Месячный лимит в USD для расчёта `remaining_usd`. |
-| `BILLING_PREPAID_CREDITS_USD` | Объём prepaid-кредитов для расчёта `remaining_usd` (если не используете лимит). |
-| `BILLING_COSTS_BASE_URL` | Базовый URL Costs API (по умолчанию `https://api.openai.com/v1`). |
+Для production-режима с настройками воркеров:
 
-Дополнительные параметры (например, `VECTOR_DIM`, `EMBED_BATCH_SIZE`,
-`EMBED_MAX_CHARS`, `DEBUG_OPENAI_LOG`) можно оставить по умолчанию или
-переопределить при необходимости.
+```bash
+python -m app.run
+```
 
-## Как устроена обработка запросов
+После запуска:
 
-- **Анализ сайта `/v1/analyze/json`.** Обработчик нормализует каталоги,
-  строит промпт, вызывает LLM и дополняет ответ эмбеддингами. Результат
-  возвращается в одном JSON с секциями `parsed`, `counts`, `timings` и
-  готовым `db_payload` для записи downstream-сервисом.
-- **Эмбеддинги `/api/ai-search`.** Запросы проходят через sliding-window
-  rate-limit, текст нормализуется, далее вызывается внутренний провайдер
-  эмбеддингов или OpenAI в качестве fallback. Если вектор не получен,
-  возвращаются пустые коллекции ID/списков, что можно заменить своей
-  логикой ранжирования.
-- **Промпты `/v1/prompts/*`.** Эндпоинты собирают шаблон, вызывают OpenAI и
-  возвращают промпт, ответ и подробные события пайплайна. Они удобны для
-  тестирования промптов и проверки длины/структуры без привязки к записи в БД.
+- Swagger UI: `http://localhost:8090/docs`
+- OpenAPI JSON: `http://localhost:8090/openapi.json`
 
-## Проверка работоспособности
+---
 
-- `GET /health` — быстрая проверка доступности сервиса.
-- `POST /v1/analyze/json` — запуск анализа без прямого доступа к БД.
-- `POST /api/ai-search` — получение эмбеддинга или fallback-ответов.
+## Эндпоинты
 
-## Работа с результатами анализа
+## 1) Health
 
-Эндпоинт `POST /v1/analyze/json` не пишет данные в БД самостоятельно. Вместо
-этого он возвращает детальный JSON с блоком `db_payload`, который повторяет
-структуру таблиц (`ai_site_prodclass`, `ai_site_goods_types`, `ai_site_equipment`
-и др.) и может быть напрямую использован downstream-сервисом. В ответе также
-присутствуют `counts`, `timings`, предпросмотры записей и исходный ответ модели —
-это помогает валидировать вставки и строить мониторинг.
+### `GET /health`
 
-Дополнительные детали контракта и примеры интеграции приведены в документации:
+Базовая проверка доступности процесса.
 
-- [Контракт сервиса анализа с downstream-записью](docs/analyze_json_downstream_contract.md)
-- [Рекомендации по интеграции `/v1/analyze/json`](docs/analyze_json_integration.md)
-- [Детальный сценарий анализа (с очередью и без)](docs/ai_analysis_flow_detailed.md)
-- [Генерация промптов OpenAI](docs/prompt_templates.md)
-- [AI Search: получение эмбеддингов и fallback-ответов](docs/ai_search.md)
+---
 
-## Полезные советы
+## 2) Основной анализ сайта
 
-- Логирование уже настроено в `app/logging_setup.py`. При необходимости
-  используйте переменную `LOG_LEVEL` или переопределите формат.
-- В продакшене стоит подключить внешнее управление секретами (Vault, AWS Secrets
-  Manager и т.д.) и настроить аудит вызовов.
-- Для локальной разработки достаточно сконфигурировать переменные окружения и
-  при необходимости подготовить хранилище, куда downstream-сервис будет писать
-  `db_payload`.
-- Для деплоя под systemd можно использовать пример юнита из
-  [`docs/systemd-service.md`](docs/systemd-service.md). Он запускает `app.run`
-  и позволяет управлять воркерами через переменные окружения без изменения
-  ExecStart.
+### `POST /v1/analyze/json`
 
+Главный маршрут сервиса.
 
-## Billing и стоимость запросов
+**На входе**: текст сайта + атрибуты компании + опциональные каталоги товаров,
+оборудования и классов для матчинга.
 
-- `GET /v1/billing/remaining` запрашивает расходы за текущий месяц через OpenAI Costs API
-  и возвращает `spent_usd`, `remaining_usd`, а также границы периода (`period_start`, `period_end`).
-- `POST /v1/analyze/json` дополнительно возвращает:
-  - `request_cost` — оценка стоимости последнего LLM-вызова по usage-токенам и локальной таблице цен модели;
-  - `billing_summary` — текущая MTD-сводка расходов/остатка (если настроен `OPENAI_ADMIN_KEY`).
-- При отсутствии billing-настроек основной анализ продолжает работать как раньше; новые поля будут `null` либо с нулевой стоимостью.
+**На выходе**:
+
+- блок `parsed` с полями, извлечёнными из LLM-ответа;
+- блоки `matches`/`counts`/`timings`;
+- `db_payload` (структура для записи в downstream БД);
+- `request_cost` и `billing_summary` (если включены billing-настройки).
+
+Детальные контракты и интеграция:
+
+- [docs/analyze_json_downstream_contract.md](docs/analyze_json_downstream_contract.md)
+- [docs/analyze_json_integration.md](docs/analyze_json_integration.md)
+- [docs/ai_analysis_flow_detailed.md](docs/ai_analysis_flow_detailed.md)
+
+---
+
+## 3) Отладка prompt-шаблонов
+
+### `POST /v1/prompts/site-available`
+
+Собирает prompt для кейса, когда есть текст сайта, вызывает модель и возвращает:
+`prompt`, `answer`, `parsed`, события этапов и метрики времени.
+
+### `POST /v1/prompts/site-unavailable`
+
+Сценарий, когда сайта нет или текста недостаточно (опора на ОКВЭД/атрибуты).
+
+Подробности:
+
+- [docs/prompt_templates.md](docs/prompt_templates.md)
+
+---
+
+## 4) Site profile
+
+### `POST /v1/site-profile`
+
+Формирует расширенное фактологичное описание компании из `source_text`, затем
+строит вектор этого описания.
+
+**Результат**:
+
+- `description` — готовый текст профиля;
+- `description_vector` — эмбеддинг описания;
+- `vector_dim` — размерность вектора;
+- `prompt` — опционально (если `return_prompt=true`).
+
+---
+
+## 5) AI Search / эмбеддинги
+
+Есть два варианта маршрута:
+
+1. `POST /ai-search` — alias, возвращает только `{ "embedding": [...] }`.
+2. `POST /api/ai-search/ai-search` — расширенный роутер с rate-limit и fallback
+   форматом `{ "ids": ... }`, если вектор не получен.
+
+Схемы и детали:
+
+- [docs/ai_search.md](docs/ai_search.md)
+
+---
+
+## 6) Billing
+
+### `GET /v1/billing/remaining`
+
+Запрашивает MTD-расходы через OpenAI Costs API и возвращает:
+
+- `spent_usd`
+- `remaining_usd`
+- `limit_usd` / `prepaid_credits_usd`
+- `period_start`, `period_end`
+
+Нужен `OPENAI_ADMIN_KEY`.
+
+---
+
+## Конфигурация (`.env`)
+
+Ниже — ключевые переменные (полный пример в `.env.example`).
+
+### OpenAI и модели
+
+- `OPENAI_API_KEY` — ключ вызовов chat/embeddings.
+- `CHAT_MODEL` — модель чата (по умолчанию `gpt-4o`).
+- `OPENAI_EMBED_MODEL` (алиас: `EMBED_MODEL`) — embedding-модель.
+- `VECTOR_DIM` — ожидаемая размерность вектора.
+
+### Внутренний embedding-провайдер (опционально)
+
+- `INTERNAL_EMBED_URL`
+- `INTERNAL_EMBED_TIMEOUT`
+
+### Runtime для ai-search
+
+- `AI_SEARCH_TIMEOUT`
+- `AI_SEARCH_RATE_LIMIT_PER_MIN`
+
+### CORS и логирование
+
+- `CORS_ALLOW_ORIGINS`
+- `CORS_ALLOW_METHODS`
+- `CORS_ALLOW_HEADERS`
+- `CORS_ALLOW_CREDENTIALS`
+- `LOG_LEVEL`
+
+### Тюнинг эмбеддингов
+
+- `EMBED_BATCH_SIZE`
+- `EMBED_MAX_CHARS`
+- `EMBED_PREVIEW_CHARS`
+- `DEBUG_OPENAI_LOG`
+
+### Billing
+
+- `OPENAI_ADMIN_KEY`
+- `BILLING_MONTHLY_LIMIT_USD`
+- `BILLING_PREPAID_CREDITS_USD`
+- `BILLING_COSTS_BASE_URL`
+
+---
+
+## Принципы работы и отказоустойчивости
+
+- Stateless: сервис не пишет в БД.
+- В `embeddings.py` сначала пытается внутренний провайдер, затем OpenAI fallback.
+- Для длинных текстов эмбеддинги считаются по чанкам и усредняются.
+- В `ai-search` используется sliding-window rate-limit по IP.
+- В основном пайплайне `analyze/json` ответы LLM парсятся в структурированный вид,
+  затем (если переданы каталоги) выполняется semantic matching по косинусу.
+- Access-log middleware в `main.py` пишет единый формат логов и возвращает
+  аккуратный `500` при необработанных исключениях.
+
+---
+
+## Тестирование
+
+Запуск всех тестов:
+
+```bash
+pytest -q
+```
+
+В репозитории уже есть unit-тесты, в том числе на:
+
+- pricing/billing расчёты;
+- rate-limit;
+- парсинг и обогащение analyze-пайплайна;
+- prompt templates.
+
+---
+
+## Deployment
+
+Для запуска через systemd используйте шаблон:
+
+- [docs/systemd-service.md](docs/systemd-service.md)
+
+Он рассчитан на запуск `python -m app.run` и управление параметрами через env.
+
