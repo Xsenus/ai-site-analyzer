@@ -69,6 +69,10 @@ class PromptTemplateResponse(BaseModel):
         None,
         description="Ответ OpenAI в сыром виде",
     )
+    response: Optional[str] = Field(
+        None,
+        description="Обратная совместимость: alias поля answer",
+    )
     raw_response: Optional[str] = Field(
         None,
         description="Обратная совместимость: raw-ответ модели (дублирует поле answer)",
@@ -86,6 +90,13 @@ class PromptTemplateResponse(BaseModel):
         None,
         description=(
             "Обратная совместимость: класс предприятия, определённый по ОКВЭД "
+            "(для /v1/prompts/site-unavailable)"
+        ),
+    )
+    prodclass: Optional[int] = Field(
+        None,
+        description=(
+            "Обратная совместимость: alias поля prodclass_by_okved "
             "(для /v1/prompts/site-unavailable)"
         ),
     )
