@@ -18,10 +18,22 @@ class BillingSummary:
     currency: str
     period_start: int
     period_end: int
-    spent_usd: float
+    spent_usd: float | None
     limit_usd: float | None
     prepaid_credits_usd: float | None
     remaining_usd: float | None
+    configured: bool
+    error: str | None
+
+
+_WARNED_BILLING_REASONS: set[str] = set()
+
+
+def _log_warning_once(reason: str) -> None:
+    if reason in _WARNED_BILLING_REASONS:
+        return
+    _WARNED_BILLING_REASONS.add(reason)
+    log.warning(reason)
 
 
 def _month_range_utc(now: dt.datetime | None = None) -> tuple[int, int]:
@@ -119,18 +131,25 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
     prepaid = settings.BILLING_PREPAID_CREDITS_USD
 
     if not (settings.OPENAI_ADMIN_KEY or "").strip():
-        log.warning("OPENAI_ADMIN_KEY is not configured; billing remaining is unavailable")
+        reason = "OPENAI_ADMIN_KEY not configured"
+        _log_warning_once(reason)
         return BillingSummary(
             currency="usd",
             period_start=start_ts,
             period_end=end_ts,
-            spent_usd=0.0,
+            spent_usd=None,
             limit_usd=limit_usd,
             prepaid_credits_usd=prepaid,
             remaining_usd=None,
+            configured=False,
+            error=reason,
         )
 
-    payload = await fetch_costs(start_time=start_ts, end_time=end_ts, project_id=project_id)
+    try:
+        payload = await fetch_costs(start_time=start_ts, end_time=end_ts, project_id=project_id)
+    except Exception as exc:
+        _log_warning_once(f"billing provider error: {exc}")
+        raise
 
     spent = 0.0
     currency = "usd"
@@ -154,4 +173,6 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
         limit_usd=limit_usd,
         prepaid_credits_usd=prepaid,
         remaining_usd=remaining,
+        configured=True,
+        error=None,
     )
