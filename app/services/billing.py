@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import calendar
 import logging
 import datetime as dt
 from dataclasses import dataclass
@@ -39,17 +38,8 @@ def _log_warning_once(reason: str) -> None:
 def _month_range_utc(now: dt.datetime | None = None) -> tuple[int, int]:
     current = now or dt.datetime.now(dt.timezone.utc)
     month_start = dt.datetime(current.year, current.month, 1, tzinfo=dt.timezone.utc)
-    last_day = calendar.monthrange(current.year, current.month)[1]
-    month_end = dt.datetime(
-        current.year,
-        current.month,
-        last_day,
-        23,
-        59,
-        59,
-        tzinfo=dt.timezone.utc,
-    )
-    return int(month_start.timestamp()), int(month_end.timestamp())
+    # month-to-date должен заканчиваться на текущем timestamp, а не в будущем.
+    return int(month_start.timestamp()), int(current.timestamp())
 
 
 def _iter_results(payload: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
@@ -121,7 +111,13 @@ async def fetch_costs(
             },
             params=params,
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            log.warning(
+                "billing provider non-200 response: status=%s body=%s",
+                response.status_code,
+                response.text,
+            )
+            response.raise_for_status()
         return response.json()
 
 
