@@ -24,7 +24,9 @@ async def billing_remaining(
         period_start=summary.period_start,
         period_end=summary.period_end,
         spent_usd=summary.spent_usd,
+        month_to_date_spend_usd=summary.spent_usd,
         limit_usd=summary.limit_usd,
+        budget_monthly_usd=summary.limit_usd,
         prepaid_credits_usd=summary.prepaid_credits_usd,
         remaining_usd=summary.remaining_usd,
     )

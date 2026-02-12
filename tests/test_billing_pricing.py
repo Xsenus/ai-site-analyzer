@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.api.schemas import BillingSummaryPayload
 from app.services.billing import _extract_amount, _iter_results
 from app.services.pricing import calculate_response_cost_usd
 
@@ -38,3 +39,19 @@ def test_iter_results_and_extract_amount():
     values = [_extract_amount(result) for result in _iter_results(payload)]
 
     assert values == [(1.23, "usd"), (2.0, "USD")]
+
+
+def test_billing_summary_payload_has_legacy_and_new_fields():
+    payload = BillingSummaryPayload(
+        currency="usd",
+        period_start=1,
+        period_end=2,
+        spent_usd=12.5,
+        limit_usd=100.0,
+        remaining_usd=87.5,
+    )
+
+    assert payload.spent_usd == 12.5
+    assert payload.month_to_date_spend_usd == 12.5
+    assert payload.budget_monthly_usd == 100.0
+    assert payload.remaining_usd == 87.5
