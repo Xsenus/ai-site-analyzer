@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import logging
 import datetime as dt
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
@@ -8,6 +9,8 @@ from typing import Any, Dict, Iterable, List, Optional
 import httpx
 
 from app.config import settings
+
+log = logging.getLogger("services.billing")
 
 
 @dataclass
@@ -112,6 +115,21 @@ async def fetch_costs(
 
 async def month_to_date_summary(project_id: str | None = None) -> BillingSummary:
     start_ts, end_ts = _month_range_utc()
+    limit_usd = settings.BILLING_MONTHLY_LIMIT_USD
+    prepaid = settings.BILLING_PREPAID_CREDITS_USD
+
+    if not (settings.OPENAI_ADMIN_KEY or "").strip():
+        log.warning("OPENAI_ADMIN_KEY is not configured; billing remaining is unavailable")
+        return BillingSummary(
+            currency="usd",
+            period_start=start_ts,
+            period_end=end_ts,
+            spent_usd=0.0,
+            limit_usd=limit_usd,
+            prepaid_credits_usd=prepaid,
+            remaining_usd=None,
+        )
+
     payload = await fetch_costs(start_time=start_ts, end_time=end_ts, project_id=project_id)
 
     spent = 0.0
@@ -121,9 +139,6 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
         spent += value
         if result_currency:
             currency = result_currency.lower()
-
-    limit_usd = settings.BILLING_MONTHLY_LIMIT_USD
-    prepaid = settings.BILLING_PREPAID_CREDITS_USD
 
     remaining: float | None = None
     if limit_usd is not None:

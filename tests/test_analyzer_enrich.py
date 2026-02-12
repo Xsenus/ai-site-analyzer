@@ -27,9 +27,9 @@ async def test_enrich_by_catalog_prefers_existing_vectors(monkeypatch):
     async def fake_embeddings(texts: list[str], embed_model: str) -> list[list[float]]:
         calls.append(list(texts))
         if texts == ["good1", "good2"]:
-            return [[1.0, 0.0], [0.0, 1.0]]
+            return [[1.0, 0.0], [0.0, 1.0]], 0
         if texts == ["Catalog Two"]:
-            return [[0.0, 1.0]]
+            return [[0.0, 1.0]], 0
         raise AssertionError(f"unexpected texts {texts}")
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
@@ -60,7 +60,7 @@ async def test_enrich_by_catalog_uses_cache_for_catalog_embeddings(monkeypatch):
 
     async def fake_embeddings(texts: list[str], embed_model: str) -> list[list[float]]:
         embed_calls.append(list(texts))
-        return [[1.0, 0.0] for _ in texts]
+        return [[1.0, 0.0] for _ in texts], 0
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
 

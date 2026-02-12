@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.api.schemas import BillingSummaryPayload
+from app.services import billing as billing_service
 from app.services.billing import _extract_amount, _iter_results
 from app.services.pricing import calculate_response_cost_usd
 
@@ -23,6 +24,26 @@ def test_calculate_response_cost_usd_gpt_5_mini_with_cached_tokens():
 def test_calculate_response_cost_usd_unknown_model_returns_zero():
     assert calculate_response_cost_usd("unknown-model", {"input_tokens": 1, "output_tokens": 1}) == 0.0
 
+
+
+def test_calculate_response_cost_usd_gpt_4o_non_zero():
+    usage = {"input_tokens": 1200, "output_tokens": 300, "input_tokens_details": {"cached_tokens": 0}}
+
+    cost = calculate_response_cost_usd("gpt-4o", usage)
+
+    expected = 1200 * (5.0 / 1_000_000) + 300 * (15.0 / 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert cost > 0
+
+
+def test_calculate_response_cost_usd_embeddings_non_zero():
+    usage = {"total_tokens": 2048}
+
+    cost = calculate_response_cost_usd("text-embedding-3-small", usage)
+
+    expected = 2048 * (0.02 / 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert cost > 0
 
 def test_iter_results_and_extract_amount():
     payload = {
@@ -53,5 +74,17 @@ def test_billing_summary_payload_has_legacy_and_new_fields():
 
     assert payload.spent_usd == 12.5
     assert payload.month_to_date_spend_usd == 12.5
+    assert payload.spend_month_to_date_usd == 12.5
     assert payload.budget_monthly_usd == 100.0
     assert payload.remaining_usd == 87.5
+
+
+@pytest.mark.anyio
+async def test_month_to_date_summary_without_admin_key_returns_null_remaining(monkeypatch):
+    monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "")
+
+    summary = await billing_service.month_to_date_summary()
+
+    assert summary.remaining_usd is None
+    assert summary.limit_usd == billing_service.settings.BILLING_MONTHLY_LIMIT_USD
+    assert summary.spent_usd == 0.0

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         default="text-embedding-3-large",
         validation_alias=AliasChoices("OPENAI_EMBED_MODEL", "EMBED_MODEL"),
     )
+    OPENAI_PRICING_TIER: str = "STANDARD"
     VECTOR_DIM: int = 3072
 
     # Optional internal embedding service

@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 import re
 from collections import OrderedDict
+from contextvars import ContextVar
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,6 +45,22 @@ _EMPTY_ITEM_MARKERS = {
 }
 
 _oai_client: AsyncOpenAI | None = None
+
+_EMBEDDINGS_USAGE_TOTAL_TOKENS: ContextVar[int] = ContextVar("embeddings_usage_total_tokens", default=0)
+
+
+def start_embeddings_usage_tracking() -> None:
+    _EMBEDDINGS_USAGE_TOTAL_TOKENS.set(0)
+
+
+def get_embeddings_usage_total_tokens() -> int:
+    return int(_EMBEDDINGS_USAGE_TOTAL_TOKENS.get() or 0)
+
+
+def _add_embeddings_usage_total_tokens(tokens: int) -> None:
+    if tokens <= 0:
+        return
+    _EMBEDDINGS_USAGE_TOTAL_TOKENS.set(get_embeddings_usage_total_tokens() + int(tokens))
 
 
 def _sanitize(value: Optional[str]) -> str:
@@ -174,30 +191,42 @@ async def call_openai_with_usage(prompt: str, chat_model: str) -> tuple[str, dic
 
 # ---------- embeddings & math ----------
 
-async def _embeddings(texts: List[str], embed_model: str) -> List[List[float]]:
+async def _embeddings(texts: List[str], embed_model: str) -> tuple[List[List[float]], int]:
     """
     Получить эмбеддинги для списка текстов батчами.
     """
     client = _get_openai_client()
     all_vecs: List[List[float]] = []
+    total_tokens = 0
     for i in range(0, len(texts), EMBED_BATCH_SIZE):
         chunk = texts[i : i + EMBED_BATCH_SIZE]
         resp = await client.embeddings.create(model=embed_model, input=chunk)
         all_vecs.extend([list(map(float, d.embedding)) for d in resp.data])
-    return all_vecs
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            total_tokens += int(getattr(usage, "total_tokens", 0) or 0)
+    _add_embeddings_usage_total_tokens(total_tokens)
+    return all_vecs, total_tokens
 
 
-async def embed_single_text(text: str, embed_model: str) -> Optional[List[float]]:
-    """Возвращает эмбеддинг для одного текста или None, если текст пустой."""
+async def embed_texts(texts: List[str], embed_model: str) -> tuple[List[List[float]], int]:
+    """Возвращает эмбеддинги списка текстов и суммарные usage.total_tokens."""
+    if not texts:
+        return [], 0
+    return await _embeddings(texts, embed_model)
+
+
+async def embed_single_text(text: str, embed_model: str) -> tuple[Optional[List[float]], int]:
+    """Возвращает эмбеддинг для одного текста и usage.total_tokens."""
     if not text:
-        return None
+        return None, 0
     payload = text.strip()
     if not payload:
-        return None
-    vecs = await _embeddings([payload], embed_model)
+        return None, 0
+    vecs, total_tokens = await _embeddings([payload], embed_model)
     if not vecs:
-        return None
-    return vecs[0]
+        return None, total_tokens
+    return vecs[0], total_tokens
 
 
 def _cosine_lists(u: List[float], v: List[float]) -> float:
@@ -415,7 +444,7 @@ async def _ensure_prodclass_name_vectors(
     prodclass_items = sorted(IB_PRODCLASS.items())
     ids = [pid for pid, _ in prodclass_items]
     names = [name for _, name in prodclass_items]
-    name_vecs = await _embeddings(names, embed_model)
+    name_vecs, _ = await embed_texts(names, embed_model)
     cached = (ids, name_vecs)
     _PRODCLASS_NAME_VECS_CACHE[embed_model] = cached
     return cached
@@ -473,7 +502,7 @@ async def _guess_prodclass_by_embeddings(text_par: str, embed_model: str) -> _Em
 
     truncated = payload[:6000]
     try:
-        text_vec = await embed_single_text(truncated, embed_model)
+        text_vec, _ = await embed_single_text(truncated, embed_model)
     except Exception:
         return _EmbeddingProdclassGuess(text_vector=None, prodclass_id=None, score=None)
 
@@ -614,7 +643,7 @@ async def parse_openai_answer(answer: str, text_par_for_fallback: str, embed_mod
                     resolution.prodclass_id, f"Класс {resolution.prodclass_id}"
                 )
                 truncated_text = text_par_for_fallback[:6000]
-                vecs = await _embeddings([truncated_text, cls_name], embed_model)
+                vecs, _ = await embed_texts([truncated_text, cls_name], embed_model)
                 if len(vecs) < 2:
                     raise ValueError("embeddings response is incomplete")
                 v1, v2 = vecs[0], vecs[1]
@@ -699,7 +728,7 @@ async def enrich_by_catalog(
     cat_names: List[str] = [str(c.get("name") or "").strip() for c in catalog]
 
     # векторы для items (их немного — оставляем в памяти до конца, т.к. они нужны в ответе)
-    item_vecs = await _embeddings(items, embed_model)
+    item_vecs, _ = await embed_texts(items, embed_model)
 
     best_match_idx: List[int] = [-1] * len(items)
     best_match_cos: List[float] = [-1.0] * len(items)
@@ -719,7 +748,7 @@ async def enrich_by_catalog(
     ) -> None:
         if not pending_names:
             return
-        embedded = await _embeddings(pending_names, embed_model)
+        embedded, _ = await embed_texts(pending_names, embed_model)
         for local_pos, cat_vec in enumerate(embedded):
             idx = pending_idx[local_pos]
             name = pending_names[local_pos]
