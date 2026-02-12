@@ -532,15 +532,14 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
             period_start=billing_summary.period_start,
             period_end=billing_summary.period_end,
             spent_usd=billing_summary.spent_usd,
-            month_to_date_spend_usd=billing_summary.spent_usd,
-            spend_month_to_date_usd=billing_summary.spent_usd,
             limit_usd=billing_summary.limit_usd,
-            budget_monthly_usd=billing_summary.limit_usd,
             prepaid_credits_usd=billing_summary.prepaid_credits_usd,
             remaining_usd=billing_summary.remaining_usd,
+            configured=billing_summary.configured,
+            error=billing_summary.error,
         )
     except Exception as exc:
-        log.warning("[analyze/json] billing summary unavailable: %s", exc)
+        log.debug("[analyze/json] billing summary unavailable: %s", exc)
 
     response = AnalyzeFromJsonResponse(
         pars_id=pars_id,

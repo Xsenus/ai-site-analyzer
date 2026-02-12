@@ -108,20 +108,26 @@ class BillingSummaryPayload(BaseModel):
     currency: str
     period_start: int
     period_end: int
-    spent_usd: float
+    spent_usd: float | None = None
     month_to_date_spend_usd: float | None = None
     spend_month_to_date_usd: float | None = None
     limit_usd: float | None = None
     budget_monthly_usd: float | None = None
     prepaid_credits_usd: float | None = None
     remaining_usd: float | None = None
+    configured: bool = True
+    error: str | None = None
 
     @model_validator(mode="after")
     def _ensure_alias_fields(self) -> "BillingSummaryPayload":
         """Дублируем поля с более явными названиями для downstream-клиентов."""
 
-        self.month_to_date_spend_usd = float(self.spent_usd)
-        self.spend_month_to_date_usd = float(self.spent_usd)
+        if self.spent_usd is not None:
+            self.month_to_date_spend_usd = float(self.spent_usd)
+            self.spend_month_to_date_usd = float(self.spent_usd)
+        else:
+            self.month_to_date_spend_usd = None
+            self.spend_month_to_date_usd = None
         self.budget_monthly_usd = self.limit_usd
         return self
 

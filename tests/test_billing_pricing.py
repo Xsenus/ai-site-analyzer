@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.api.schemas import BillingSummaryPayload
+from app.routers import billing as billing_router
 from app.services import billing as billing_service
 from app.services.billing import _extract_amount, _iter_results
 from app.services.pricing import calculate_response_cost_usd
@@ -77,14 +78,63 @@ def test_billing_summary_payload_has_legacy_and_new_fields():
     assert payload.spend_month_to_date_usd == 12.5
     assert payload.budget_monthly_usd == 100.0
     assert payload.remaining_usd == 87.5
+    assert payload.configured is True
+    assert payload.error is None
+
+
+def test_billing_summary_payload_supports_unconfigured_state():
+    payload = BillingSummaryPayload(
+        currency="usd",
+        period_start=1,
+        period_end=2,
+        spent_usd=None,
+        limit_usd=25.0,
+        remaining_usd=None,
+        configured=False,
+        error="OPENAI_ADMIN_KEY not configured",
+    )
+
+    assert payload.month_to_date_spend_usd is None
+    assert payload.spend_month_to_date_usd is None
+    assert payload.budget_monthly_usd == 25.0
+    assert payload.configured is False
+    assert payload.error == "OPENAI_ADMIN_KEY not configured"
 
 
 @pytest.mark.anyio
 async def test_month_to_date_summary_without_admin_key_returns_null_remaining(monkeypatch):
+    billing_service._WARNED_BILLING_REASONS.clear()
     monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "")
 
     summary = await billing_service.month_to_date_summary()
 
     assert summary.remaining_usd is None
     assert summary.limit_usd == billing_service.settings.BILLING_MONTHLY_LIMIT_USD
-    assert summary.spent_usd == 0.0
+    assert summary.spent_usd is None
+    assert summary.configured is False
+    assert summary.error == "OPENAI_ADMIN_KEY not configured"
+
+
+@pytest.mark.anyio
+async def test_month_to_date_summary_without_admin_key_logs_warning_once(monkeypatch, caplog):
+    billing_service._WARNED_BILLING_REASONS.clear()
+    monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "")
+
+    caplog.set_level("WARNING", logger="services.billing")
+    await billing_service.month_to_date_summary()
+    await billing_service.month_to_date_summary()
+
+    assert caplog.messages.count("OPENAI_ADMIN_KEY not configured") == 1
+
+
+@pytest.mark.anyio
+async def test_billing_remaining_endpoint_returns_200_style_payload_without_admin_key(monkeypatch):
+    billing_service._WARNED_BILLING_REASONS.clear()
+    monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "")
+
+    payload = await billing_router.billing_remaining(project_id=None)
+
+    assert payload.configured is False
+    assert payload.error == "OPENAI_ADMIN_KEY not configured"
+    assert payload.spend_month_to_date_usd is None
+    assert payload.remaining_usd is None
