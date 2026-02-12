@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from app.api.schemas import BillingSummaryPayload
@@ -18,7 +20,7 @@ def test_calculate_response_cost_usd_gpt_5_mini_with_cached_tokens():
 
     cost = calculate_response_cost_usd("gpt-5-mini", usage)
 
-    expected = 800 * (0.45 / 1_000_000) + 200 * (0.045 / 1_000_000) + 250 * (3.60 / 1_000_000)
+    expected = 800 * (0.25 / 1_000_000) + 200 * (0.025 / 1_000_000) + 250 * (2.00 / 1_000_000)
     assert cost == pytest.approx(expected)
 
 
@@ -31,6 +33,16 @@ def test_calculate_response_cost_usd_gpt_4o_non_zero():
     usage = {"input_tokens": 1200, "output_tokens": 300, "input_tokens_details": {"cached_tokens": 0}}
 
     cost = calculate_response_cost_usd("gpt-4o", usage)
+
+    expected = 1200 * (5.0 / 1_000_000) + 300 * (15.0 / 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert cost > 0
+
+
+def test_calculate_response_cost_usd_versioned_model_uses_soft_match_non_zero():
+    usage = {"input_tokens": 1200, "output_tokens": 300, "input_tokens_details": {"cached_tokens": 0}}
+
+    cost = calculate_response_cost_usd("gpt-4o-2024-11-20", usage)
 
     expected = 1200 * (5.0 / 1_000_000) + 300 * (15.0 / 1_000_000)
     assert cost == pytest.approx(expected)
@@ -61,6 +73,15 @@ def test_iter_results_and_extract_amount():
     values = [_extract_amount(result) for result in _iter_results(payload)]
 
     assert values == [(1.23, "usd"), (2.0, "USD")]
+
+
+def test_month_range_utc_uses_current_timestamp_for_end():
+    fixed_now = dt.datetime(2026, 2, 20, 10, 30, 15, tzinfo=dt.timezone.utc)
+
+    start_ts, end_ts = billing_service._month_range_utc(now=fixed_now)
+
+    assert start_ts == int(dt.datetime(2026, 2, 1, 0, 0, 0, tzinfo=dt.timezone.utc).timestamp())
+    assert end_ts == int(fixed_now.timestamp())
 
 
 def test_billing_summary_payload_has_legacy_and_new_fields():

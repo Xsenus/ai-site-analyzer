@@ -18,7 +18,8 @@ class ModelPricing:
 _STANDARD_MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "gpt-4o": ModelPricing(input_per_1m=5.00, cached_input_per_1m=2.50, output_per_1m=15.00),
     "gpt-4o-mini": ModelPricing(input_per_1m=0.15, cached_input_per_1m=0.075, output_per_1m=0.60),
-    "gpt-5-mini": ModelPricing(input_per_1m=0.45, cached_input_per_1m=0.045, output_per_1m=3.60),
+    "gpt-5": ModelPricing(input_per_1m=1.25, cached_input_per_1m=0.125, output_per_1m=10.00),
+    "gpt-5-mini": ModelPricing(input_per_1m=0.25, cached_input_per_1m=0.025, output_per_1m=2.00),
     "gpt-5.2": ModelPricing(input_per_1m=1.25, cached_input_per_1m=0.125, output_per_1m=10.00),
     "text-embedding-3-small": ModelPricing(input_per_1m=0.02, cached_input_per_1m=0.0, output_per_1m=0.0),
     "text-embedding-3-large": ModelPricing(input_per_1m=0.13, cached_input_per_1m=0.0, output_per_1m=0.0),
@@ -46,8 +47,31 @@ def _resolve_tier_pricing() -> Mapping[str, ModelPricing]:
     return MODEL_PRICING_USD_PER_1M_BY_TIER.get(tier, MODEL_PRICING_USD_PER_1M_BY_TIER["STANDARD"])
 
 
+def _resolve_model_pricing(model: str) -> ModelPricing | None:
+    normalized_model = (model or "").strip()
+    tier_pricing = _resolve_tier_pricing()
+
+    if normalized_model in tier_pricing:
+        return tier_pricing[normalized_model]
+
+    prefixes = (
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-5-mini",
+        "gpt-5.2",
+        "gpt-5",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+    )
+    for prefix in prefixes:
+        if normalized_model.startswith(prefix):
+            return tier_pricing.get(prefix)
+
+    return None
+
+
 def calculate_response_cost_usd(model: str, usage: Dict[str, Any]) -> float:
-    pricing = _resolve_tier_pricing().get((model or "").strip())
+    pricing = _resolve_model_pricing(model)
     if pricing is None:
         return 0.0
 
