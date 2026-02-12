@@ -373,9 +373,14 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
     assert response.db_payload.goods_types[0].vector.literal == "[0.2,0.4]"
     assert response.db_payload.equipment[0].vector.literal == "[0.2,0.4]"
     assert response.request_cost is not None
+    assert response.request_cost.model == "fake-chat"
     assert response.request_cost.input_tokens == 200
     assert response.request_cost.cached_input_tokens == 20
+    assert response.request_cost.output_tokens == 50
+    assert response.request_cost.cost_usd >= 0.0
     assert response.billing_summary is not None
+    assert response.billing_summary.month_to_date_spend_usd == 12.3
+    assert response.billing_summary.budget_monthly_usd == 100.0
     assert response.billing_summary.remaining_usd == 87.7
 
 

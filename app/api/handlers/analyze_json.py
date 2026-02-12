@@ -505,7 +505,9 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
             period_start=billing_summary.period_start,
             period_end=billing_summary.period_end,
             spent_usd=billing_summary.spent_usd,
+            month_to_date_spend_usd=billing_summary.spent_usd,
             limit_usd=billing_summary.limit_usd,
+            budget_monthly_usd=billing_summary.limit_usd,
             prepaid_credits_usd=billing_summary.prepaid_credits_usd,
             remaining_usd=billing_summary.remaining_usd,
         )
