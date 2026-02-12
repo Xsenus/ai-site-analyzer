@@ -32,7 +32,7 @@ def test_normalize_score_uses_4_digits():
 @pytest.mark.anyio
 async def test_parse_openai_answer_fallbacks_goods_type(monkeypatch):
     async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
-        return [[1.0, 0.0, 0.0] for _ in texts]
+        return [[1.0, 0.0, 0.0] for _ in texts], 0
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
     analyzer._PRODCLASS_NAME_VECS_CACHE.clear()
@@ -66,7 +66,7 @@ async def test_parse_openai_answer_fallbacks_goods_type(monkeypatch):
 )
 async def test_parse_openai_answer_tolerates_description_format(monkeypatch, description_line):
     async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
-        return [[1.0, 0.0, 0.0] for _ in texts]
+        return [[1.0, 0.0, 0.0] for _ in texts], 0
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
 
@@ -88,7 +88,7 @@ async def test_parse_openai_answer_tolerates_description_format(monkeypatch, des
 @pytest.mark.anyio
 async def test_parse_openai_answer_merges_goods_type(monkeypatch):
     async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
-        return [[1.0, 0.0, 0.0] for _ in texts]
+        return [[1.0, 0.0, 0.0] for _ in texts], 0
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
 
@@ -139,7 +139,7 @@ async def test_parse_openai_answer_embedding_override(monkeypatch):
                 out.append([0.0, 1.0])
             else:
                 out.append([1.0, 0.0])
-        return out
+        return out, 0
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
     analyzer._PRODCLASS_NAME_VECS_CACHE.clear()
@@ -209,7 +209,7 @@ async def test_parse_openai_answer_fallback_failure_sets_default(monkeypatch):
 @pytest.mark.anyio
 async def test_parse_openai_answer_filters_empty_equipment(monkeypatch):
     async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
-        return [[1.0, 0.0, 0.0] for _ in texts]
+        return [[1.0, 0.0, 0.0] for _ in texts], 0
 
     monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
 
@@ -315,10 +315,10 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
             "GOODS_TYPE_SOURCE": "GOODS_TYPE",
         }
 
-    async def fake_embed_single_text(text: str, embed_model: str) -> list[float]:
+    async def fake_embed_single_text(text: str, embed_model: str):
         assert text == "Краткое описание"
         assert embed_model == "fake-embed"
-        return [0.1, 0.2]
+        return [0.1, 0.2], 25
 
     async def fake_enrich(
         items: list[str], catalog: list[dict], embed_model: str, threshold: float
@@ -402,3 +402,60 @@ async def test_analyze_json_returns_502_on_parse_failure(monkeypatch):
 
     assert exc_info.value.status_code == 502
     assert str(exc_info.value.detail).startswith("LLM response parse failed:")
+
+
+@pytest.mark.anyio
+async def test_analyze_json_request_cost_includes_embeddings(monkeypatch):
+    async def fake_call_openai_with_usage(_prompt: str, _model: str):
+        return "LLM ANSWER", {"input_tokens": 1000, "output_tokens": 100, "input_tokens_details": {"cached_tokens": 0}}
+
+    async def fake_parse(_answer: str, _text: str, _embed_model: str) -> dict:
+        return {
+            "DESCRIPTION": "Краткое описание",
+            "PRODCLASS": 41,
+            "PRODCLASS_SCORE": 0.77,
+            "PRODCLASS_SOURCE": "model_reply",
+            "PRODCLASS_SCORE_SOURCE": "model_reply",
+            "EQUIPMENT_LIST": [],
+            "GOODS_LIST": [],
+            "GOODS_TYPE_LIST": [],
+            "GOODS_TYPE_SOURCE": "GOODS_TYPE",
+        }
+
+    async def fake_embed_single_text(_text: str, _embed_model: str):
+        return [0.1, 0.2], 500
+
+    async def fake_enrich(items: list[str], catalog: list[dict], embed_model: str, threshold: float) -> list[dict]:
+        return []
+
+    async def fake_month_to_date_summary():
+        class S:
+            currency = "usd"
+            period_start = 1
+            period_end = 2
+            spent_usd = 0.0
+            limit_usd = None
+            prepaid_credits_usd = None
+            remaining_usd = None
+        return S()
+
+    monkeypatch.setattr(analyze_json_routes, "call_openai_with_usage", fake_call_openai_with_usage)
+    monkeypatch.setattr(analyze_json_routes, "parse_openai_answer", fake_parse)
+    monkeypatch.setattr(analyze_json_routes, "embed_single_text", fake_embed_single_text)
+    monkeypatch.setattr(analyze_json_routes, "enrich_by_catalog", fake_enrich)
+    monkeypatch.setattr(analyze_json_routes, "month_to_date_summary", fake_month_to_date_summary)
+    monkeypatch.setattr(analyze_json_routes, "get_embeddings_usage_total_tokens", lambda: 500)
+
+    request = AnalyzeFromJsonRequest(
+        text_par="source text",
+        chat_model="gpt-4o",
+        embed_model="text-embedding-3-small",
+    )
+
+    response = await analyze_json_routes.analyze_from_json(request)
+
+    assert response.request_cost is not None
+    assert response.request_cost.tokens_total == 1600
+    assert response.request_cost.cost_usd > 0
+    assert response.request_cost.request_cost_breakdown is not None
+    assert len(response.request_cost.request_cost_breakdown) == 2

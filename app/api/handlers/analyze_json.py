@@ -28,7 +28,9 @@ from app.services.analyzer import (
     call_openai_with_usage,
     embed_single_text,
     enrich_by_catalog,
+    get_embeddings_usage_total_tokens,
     parse_openai_answer,
+    start_embeddings_usage_tracking,
 )
 from app.services.billing import month_to_date_summary
 from app.services.pricing import calculate_response_cost_usd
@@ -264,6 +266,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         )
 
     timings: Dict[str, int] = {}
+    start_embeddings_usage_tracking()
 
     t_prompt = dt.datetime.now()
     prompt = build_prompt(text_par)
@@ -357,7 +360,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     if description_text:
         t_desc = dt.datetime.now()
         try:
-            description_vector = await embed_single_text(description_text, embed_model)
+            description_vector, _ = await embed_single_text(description_text, embed_model)
             description_ms = _tick(t_desc)
             log.info(
                 "[analyze/json] description embedding dim=%s took_ms=%s",
@@ -489,12 +492,36 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     if isinstance(input_details, dict):
         usage_cached_input_tokens = _as_int(input_details.get("cached_tokens"), default=0) or 0
 
+    chat_tokens_total = usage_input_tokens + usage_output_tokens
+    chat_cost = calculate_response_cost_usd(chat_model, usage or {})
+
+    embeddings_tokens_total = get_embeddings_usage_total_tokens()
+    embed_cost = calculate_response_cost_usd(
+        embed_model,
+        {"total_tokens": embeddings_tokens_total, "input_tokens": embeddings_tokens_total},
+    )
+
     request_cost = RequestCostPayload(
         model=chat_model,
         input_tokens=usage_input_tokens,
         cached_input_tokens=usage_cached_input_tokens,
         output_tokens=usage_output_tokens,
-        cost_usd=calculate_response_cost_usd(chat_model, usage or {}),
+        tokens_total=chat_tokens_total + embeddings_tokens_total,
+        cost_usd=chat_cost + embed_cost,
+        request_cost_breakdown=[
+            {
+                "model": chat_model,
+                "tokens_total": chat_tokens_total,
+                "cost_usd": chat_cost,
+                "kind": "chat",
+            },
+            {
+                "model": embed_model,
+                "tokens_total": embeddings_tokens_total,
+                "cost_usd": embed_cost,
+                "kind": "embeddings",
+            },
+        ],
     )
 
     billing_summary_payload: BillingSummaryPayload | None = None
@@ -506,6 +533,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
             period_end=billing_summary.period_end,
             spent_usd=billing_summary.spent_usd,
             month_to_date_spend_usd=billing_summary.spent_usd,
+            spend_month_to_date_usd=billing_summary.spent_usd,
             limit_usd=billing_summary.limit_usd,
             budget_monthly_usd=billing_summary.limit_usd,
             prepaid_credits_usd=billing_summary.prepaid_credits_usd,

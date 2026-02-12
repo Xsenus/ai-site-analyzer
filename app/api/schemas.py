@@ -87,12 +87,21 @@ class MatchedItemPayload(BaseModel):
     vector: VectorPayload
 
 
+class RequestCostBreakdownItem(BaseModel):
+    model: str
+    tokens_total: int
+    cost_usd: float
+    kind: str
+
+
 class RequestCostPayload(BaseModel):
     model: str
     input_tokens: int
     cached_input_tokens: int
     output_tokens: int
+    tokens_total: int = 0
     cost_usd: float
+    request_cost_breakdown: List[RequestCostBreakdownItem] | None = None
 
 
 class BillingSummaryPayload(BaseModel):
@@ -101,6 +110,7 @@ class BillingSummaryPayload(BaseModel):
     period_end: int
     spent_usd: float
     month_to_date_spend_usd: float | None = None
+    spend_month_to_date_usd: float | None = None
     limit_usd: float | None = None
     budget_monthly_usd: float | None = None
     prepaid_credits_usd: float | None = None
@@ -111,6 +121,7 @@ class BillingSummaryPayload(BaseModel):
         """Дублируем поля с более явными названиями для downstream-клиентов."""
 
         self.month_to_date_spend_usd = float(self.spent_usd)
+        self.spend_month_to_date_usd = float(self.spent_usd)
         self.budget_monthly_usd = self.limit_usd
         return self
 
