@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 from app.config import settings
 from app.schemas.ai_search import (
+    AiEmbeddingBatchIn,
+    AiEmbeddingBatchOut,
     AiSearchIn,
     AiEmbeddingOut,
     AiIdsOut,
@@ -21,7 +23,7 @@ from app.schemas.ai_search import (
     ProdclassRow,
     ErrorOut,
 )
-from app.services.embeddings import make_embedding_or_none, validate_dim, VECTOR_DIM
+from app.services.embeddings import embed_many, make_embedding_or_none, validate_dim, VECTOR_DIM
 from app.utils.rate_limit import SlidingWindowRateLimiter
 
 log = logging.getLogger("routers.ai_search")
@@ -159,3 +161,41 @@ async def ai_search(request: Request, payload: AiSearchIn) -> Union[AiEmbeddingO
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=ErrorOut(error="internal error").model_dump(),
         )
+
+
+@router.post("/batch", response_model=AiEmbeddingBatchOut)
+async def ai_search_batch(
+    request: Request,
+    payload: AiEmbeddingBatchIn,
+) -> AiEmbeddingBatchOut:
+    ip = _client_ip(request)
+    allowed, remaining = limiter.check_and_hit(ip)
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests")
+
+    items = [str(item or "").strip() for item in payload.items]
+    if not items or any(not item for item in items):
+        raise HTTPException(status_code=400, detail="items must contain non-empty strings")
+
+    started = time.time()
+    try:
+        embeddings = await asyncio.wait_for(
+            embed_many(items, timeout=AI_SEARCH_TIMEOUT * 0.9),
+            timeout=AI_SEARCH_TIMEOUT,
+        )
+    except asyncio.TimeoutError as exc:
+        log.warning("ai-search batch timeout after %.1fs", AI_SEARCH_TIMEOUT)
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="timeout") from exc
+    except Exception as exc:
+        log.exception("ai-search batch unexpected error: %s", exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="internal error") from exc
+
+    elapsed = (time.time() - started) * 1000
+    log.info(
+        "ai-search batch response count=%s in %.1fms ip=%s remaining=%d",
+        len(embeddings),
+        elapsed,
+        ip,
+        remaining,
+    )
+    return AiEmbeddingBatchOut(embeddings=[[float(x) for x in vector] for vector in embeddings])

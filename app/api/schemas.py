@@ -60,6 +60,8 @@ class AnalyzeFromJsonRequest(BaseModel):
     chat_model: str | None = None
     embed_model: str | None = None
     company_id: int | None = Field(default=None, ge=1)
+    company_name: str | None = None
+    okved: str | None = None
     goods_catalog: CatalogItemsPayload | None = None
     equipment_catalog: CatalogItemsPayload | None = None
     return_prompt: bool = False

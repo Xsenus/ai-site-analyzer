@@ -159,3 +159,34 @@ async def test_billing_remaining_endpoint_returns_200_style_payload_without_admi
     assert payload.error == "OPENAI_ADMIN_KEY not configured"
     assert payload.spend_month_to_date_usd is None
     assert payload.remaining_usd is None
+
+
+@pytest.mark.anyio
+async def test_month_to_date_summary_uses_ttl_cache(monkeypatch):
+    billing_service.clear_billing_summary_cache()
+    monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "sk-admin-test")
+    monkeypatch.setattr(billing_service.settings, "BILLING_SUMMARY_CACHE_TTL_SEC", 300)
+
+    calls = 0
+
+    async def fake_fetch_costs(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "data": [
+                {
+                    "results": [
+                        {"amount": {"value": 1.25, "currency": "usd"}},
+                    ]
+                }
+            ]
+        }
+
+    monkeypatch.setattr(billing_service, "fetch_costs", fake_fetch_costs)
+
+    first = await billing_service.month_to_date_summary(project_id="proj-1")
+    second = await billing_service.month_to_date_summary(project_id="proj-1")
+
+    assert calls == 1
+    assert first.spent_usd == pytest.approx(1.25)
+    assert second.spent_usd == pytest.approx(1.25)

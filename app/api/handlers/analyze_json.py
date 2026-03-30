@@ -269,7 +269,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     start_embeddings_usage_tracking()
 
     t_prompt = dt.datetime.now()
-    prompt = build_prompt(text_par)
+    prompt = build_prompt(text_par, body.company_name or "", body.okved or "")
     timings["build_prompt_ms"] = _tick(t_prompt)
     log.info(
         "[analyze/json] prompt built len=%s took_ms=%s",

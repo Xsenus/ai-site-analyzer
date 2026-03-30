@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import datetime as dt
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
@@ -25,7 +26,14 @@ class BillingSummary:
     error: str | None
 
 
+@dataclass
+class _BillingCacheEntry:
+    expires_at: float
+    summary: BillingSummary
+
+
 _WARNED_BILLING_REASONS: set[str] = set()
+_BILLING_SUMMARY_CACHE: dict[tuple[str | None, int], _BillingCacheEntry] = {}
 
 
 def _log_warning_once(reason: str) -> None:
@@ -33,6 +41,30 @@ def _log_warning_once(reason: str) -> None:
         return
     _WARNED_BILLING_REASONS.add(reason)
     log.warning(reason)
+
+
+def clear_billing_summary_cache() -> None:
+    _BILLING_SUMMARY_CACHE.clear()
+
+
+def _get_cached_summary(project_id: str | None, period_start: int) -> BillingSummary | None:
+    entry = _BILLING_SUMMARY_CACHE.get((project_id, period_start))
+    if entry is None:
+        return None
+    if entry.expires_at <= monotonic():
+        _BILLING_SUMMARY_CACHE.pop((project_id, period_start), None)
+        return None
+    return entry.summary
+
+
+def _store_cached_summary(project_id: str | None, period_start: int, summary: BillingSummary) -> None:
+    ttl = max(int(settings.BILLING_SUMMARY_CACHE_TTL_SEC or 0), 0)
+    if ttl <= 0:
+        return
+    _BILLING_SUMMARY_CACHE[(project_id, period_start)] = _BillingCacheEntry(
+        expires_at=monotonic() + ttl,
+        summary=summary,
+    )
 
 
 def _month_range_utc(now: dt.datetime | None = None) -> tuple[int, int]:
@@ -141,6 +173,10 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
             error=reason,
         )
 
+    cached = _get_cached_summary(project_id, start_ts)
+    if cached is not None:
+        return cached
+
     try:
         payload = await fetch_costs(start_time=start_ts, end_time=end_ts, project_id=project_id)
     except Exception as exc:
@@ -161,7 +197,7 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
     elif prepaid is not None:
         remaining = prepaid - spent
 
-    return BillingSummary(
+    summary = BillingSummary(
         currency=currency,
         period_start=start_ts,
         period_end=end_ts,
@@ -172,3 +208,5 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
         configured=True,
         error=None,
     )
+    _store_cached_summary(project_id, start_ts, summary)
+    return summary

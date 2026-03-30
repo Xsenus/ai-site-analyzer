@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     BILLING_MONTHLY_LIMIT_USD: float | None = None
     BILLING_PREPAID_CREDITS_USD: float | None = None
     BILLING_COSTS_BASE_URL: str = "https://api.openai.com/v1"
+    BILLING_SUMMARY_CACHE_TTL_SEC: int = 300
 
     model_config = SettingsConfigDict(
         env_file=".env",

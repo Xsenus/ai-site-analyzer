@@ -33,9 +33,16 @@ def test_ai_search_api_path_and_alias(monkeypatch):
         assert timeout > 0
         return [0.1, 0.2, 0.3]
 
+    async def fake_embed_many(texts: list[str], *, timeout: float):
+        assert texts
+        assert timeout > 0
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
     monkeypatch.setattr("app.routers.ai_search.make_embedding_or_none", fake_make_embedding_or_none)
+    monkeypatch.setattr("app.routers.ai_search.embed_many", fake_embed_many)
     monkeypatch.setattr("app.routers.ai_search.validate_dim", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("app.main.make_embedding_or_none", fake_make_embedding_or_none)
+    monkeypatch.setattr("app.main.embed_many", fake_embed_many)
     monkeypatch.setattr("app.main.validate_dim", lambda *_args, **_kwargs: True)
 
     app = create_app()
@@ -45,10 +52,16 @@ def test_ai_search_api_path_and_alias(monkeypatch):
 
     api_resp = client.post("/api/ai-search", json=payload)
     alias_resp = client.post("/ai-search", json=payload)
+    batch_api_resp = client.post("/api/ai-search/batch", json={"items": [payload["q"], "лазер"]})
+    batch_alias_resp = client.post("/ai-search/batch", json={"items": [payload["q"], "лазер"]})
     old_path_resp = client.post("/api/ai-search/ai-search", json=payload)
 
     assert api_resp.status_code == 200
     assert alias_resp.status_code == 200
+    assert batch_api_resp.status_code == 200
+    assert batch_alias_resp.status_code == 200
     assert api_resp.json() == {"embedding": [0.1, 0.2, 0.3]}
     assert alias_resp.json() == {"embedding": [0.1, 0.2, 0.3]}
+    assert batch_api_resp.json() == {"embeddings": [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]}
+    assert batch_alias_resp.json() == {"embeddings": [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]}
     assert old_path_resp.status_code == 404

@@ -5,6 +5,10 @@ from typing import Dict, List, Optional, Annotated
 from pydantic import BaseModel, Field
 
 
+class AiEmbeddingBatchIn(BaseModel):
+    items: Annotated[List[str], Field(min_length=1)]
+
+
 class AiSearchIn(BaseModel):
     # обязательное поле, ограничение по длине
     q: str = Field(..., min_length=1, max_length=2000)
@@ -33,6 +37,10 @@ class ProdclassRow(BaseModel):
 class AiEmbeddingOut(BaseModel):
     # pydantic v2: вместо conlist используем Annotated + Field(min_length=1)
     embedding: Annotated[List[float], Field(min_length=1)]
+
+
+class AiEmbeddingBatchOut(BaseModel):
+    embeddings: List[List[float]]
 
 
 class AiIdsOut(BaseModel):

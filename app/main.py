@@ -15,8 +15,8 @@ from app.config import settings
 from app.api.routes import router as api_router  # ваши /v1/... маршруты
 
 # <<< ВАЖНО: импортируем схемы и логику на уровне модуля, чтобы Pydantic видел типы >>>
-from app.schemas.ai_search import AiSearchIn, AiEmbeddingOut
-from app.services.embeddings import make_embedding_or_none, validate_dim, VECTOR_DIM
+from app.schemas.ai_search import AiEmbeddingBatchIn, AiEmbeddingBatchOut, AiSearchIn, AiEmbeddingOut
+from app.services.embeddings import embed_many, make_embedding_or_none, validate_dim, VECTOR_DIM
 
 # Доп. роутер из ТЗ (POST /api/ai-search)
 try:
@@ -172,6 +172,14 @@ def create_app() -> FastAPI:
         if not validate_dim(vec, VECTOR_DIM):
             raise HTTPException(status_code=502, detail="embedding provider failed")
         return {"embedding": [float(x) for x in vec]}
+
+    @app.post("/ai-search/batch", response_model=AiEmbeddingBatchOut)
+    async def _ai_search_batch_alias(body: AiEmbeddingBatchIn):
+        items = [str(item or "").strip() for item in body.items]
+        if not items or any(not item for item in items):
+            raise HTTPException(status_code=400, detail="items must contain non-empty strings")
+        embeddings = await embed_many(items, timeout=settings.AI_SEARCH_TIMEOUT * 0.9)
+        return {"embeddings": [[float(x) for x in vector] for vector in embeddings]}
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def _favicon_alias() -> Response:

@@ -1,6 +1,7 @@
 import os
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -292,7 +293,11 @@ def test_catalog_items_to_dict_handles_plain_list():
 
 @pytest.mark.anyio
 async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
-    monkeypatch.setattr(analyze_json_routes, "build_prompt", lambda text: "PROMPT")
+    monkeypatch.setattr(
+        analyze_json_routes,
+        "build_prompt",
+        lambda text, company_name="", okved="": "PROMPT",
+    )
 
     async def fake_call_openai(prompt: str, model: str) -> str:
         assert prompt == "PROMPT"
@@ -459,3 +464,73 @@ async def test_analyze_json_request_cost_includes_embeddings(monkeypatch):
     assert response.request_cost.cost_usd > 0
     assert response.request_cost.request_cost_breakdown is not None
     assert len(response.request_cost.request_cost_breakdown) == 2
+
+
+@pytest.mark.anyio
+async def test_analyze_from_json_passes_company_context_to_prompt(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_build_prompt(text_par: str, company_name: str = "", okved: str = "") -> str:
+        captured["text_par"] = text_par
+        captured["company_name"] = company_name
+        captured["okved"] = okved
+        return "PROMPT"
+
+    async def fake_llm(prompt: str, chat_model: str):
+        assert prompt == "PROMPT"
+        return "ANSWER", {"input_tokens": 10, "output_tokens": 5, "input_tokens_details": {"cached_tokens": 0}}
+
+    async def fake_parse(_answer: str, _text: str, _embed_model: str) -> dict:
+        return {
+            "DESCRIPTION": "Описание",
+            "PRODCLASS": 41,
+            "PRODCLASS_SCORE": 0.91,
+            "PRODCLASS_SOURCE": "model_reply",
+            "PRODCLASS_SCORE_SOURCE": "model_reply",
+            "EQUIPMENT_LIST": [],
+            "GOODS_TYPE_LIST": [],
+            "GOODS_TYPE_SOURCE": "GOODS_TYPE",
+        }
+
+    async def fake_embed_single_text(_text: str, _embed_model: str):
+        return [0.1, 0.2], 0
+
+    async def fake_enrich(*_args, **_kwargs):
+        return []
+
+    async def fake_month_to_date_summary():
+        return SimpleNamespace(
+            currency="usd",
+            period_start=1,
+            period_end=2,
+            spent_usd=1.0,
+            limit_usd=10.0,
+            prepaid_credits_usd=None,
+            remaining_usd=9.0,
+            configured=True,
+            error=None,
+        )
+
+    monkeypatch.setattr(analyze_json_routes, "build_prompt", fake_build_prompt)
+    monkeypatch.setattr(analyze_json_routes, "call_openai_with_usage", fake_llm)
+    monkeypatch.setattr(analyze_json_routes, "parse_openai_answer", fake_parse)
+    monkeypatch.setattr(analyze_json_routes, "embed_single_text", fake_embed_single_text)
+    monkeypatch.setattr(analyze_json_routes, "enrich_by_catalog", fake_enrich)
+    monkeypatch.setattr(analyze_json_routes, "month_to_date_summary", fake_month_to_date_summary)
+    monkeypatch.setattr(analyze_json_routes, "get_embeddings_usage_total_tokens", lambda: 0)
+
+    response = await analyze_json_routes.analyze_from_json(
+        AnalyzeFromJsonRequest(
+            text_par="Текст сайта",
+            company_name="ООО Ромашка",
+            okved="10.51",
+            return_answer_raw=False,
+        )
+    )
+
+    assert response.prodclass.id == 41
+    assert captured == {
+        "text_par": "Текст сайта",
+        "company_name": "ООО Ромашка",
+        "okved": "10.51",
+    }
