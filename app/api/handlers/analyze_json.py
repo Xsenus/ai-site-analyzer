@@ -527,17 +527,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     billing_summary_payload: BillingSummaryPayload | None = None
     try:
         billing_summary = await month_to_date_summary()
-        billing_summary_payload = BillingSummaryPayload(
-            currency=billing_summary.currency,
-            period_start=billing_summary.period_start,
-            period_end=billing_summary.period_end,
-            spent_usd=billing_summary.spent_usd,
-            limit_usd=billing_summary.limit_usd,
-            prepaid_credits_usd=billing_summary.prepaid_credits_usd,
-            remaining_usd=billing_summary.remaining_usd,
-            configured=billing_summary.configured,
-            error=billing_summary.error,
-        )
+        billing_summary_payload = BillingSummaryPayload.from_summary(billing_summary)
     except Exception as exc:
         log.debug("[analyze/json] billing summary unavailable: %s", exc)
 

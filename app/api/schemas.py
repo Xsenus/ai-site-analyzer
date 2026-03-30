@@ -118,6 +118,20 @@ class BillingSummaryPayload(BaseModel):
     configured: bool = True
     error: str | None = None
 
+    @classmethod
+    def from_summary(cls, summary: Any) -> "BillingSummaryPayload":
+        return cls(
+            currency=str(getattr(summary, "currency", "usd")),
+            period_start=int(getattr(summary, "period_start", 0)),
+            period_end=int(getattr(summary, "period_end", 0)),
+            spent_usd=getattr(summary, "spent_usd", None),
+            limit_usd=getattr(summary, "limit_usd", None),
+            prepaid_credits_usd=getattr(summary, "prepaid_credits_usd", None),
+            remaining_usd=getattr(summary, "remaining_usd", None),
+            configured=bool(getattr(summary, "configured", True)),
+            error=getattr(summary, "error", None),
+        )
+
     @model_validator(mode="after")
     def _ensure_alias_fields(self) -> "BillingSummaryPayload":
         """Дублируем поля с более явными названиями для downstream-клиентов."""

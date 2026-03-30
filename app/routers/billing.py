@@ -17,14 +17,4 @@ async def billing_remaining(
     except Exception as exc:  # pragma: no cover - network/runtime safety
         raise HTTPException(status_code=502, detail=f"billing provider error: {exc}") from exc
 
-    return BillingSummaryPayload(
-        currency=summary.currency,
-        period_start=summary.period_start,
-        period_end=summary.period_end,
-        spent_usd=summary.spent_usd,
-        limit_usd=summary.limit_usd,
-        prepaid_credits_usd=summary.prepaid_credits_usd,
-        remaining_usd=summary.remaining_usd,
-        configured=summary.configured,
-        error=summary.error,
-    )
+    return BillingSummaryPayload.from_summary(summary)
