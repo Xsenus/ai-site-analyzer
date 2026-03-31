@@ -86,6 +86,7 @@ class MatchedItemPayload(BaseModel):
     text: str
     match_id: int | None = None
     score: float | None = None
+    source: str | None = None
     vector: VectorPayload
 
 

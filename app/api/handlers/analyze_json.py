@@ -153,7 +153,11 @@ def _vector_payload(values: Optional[List[float]], literal: Optional[str]) -> Ve
     return VectorPayload(values=safe_values, literal=literal_str, dim=dim)
 
 
-def _matched_payload(items: List[Dict[str, Any]]) -> List[MatchedItemPayload]:
+def _matched_payload(
+    items: List[Dict[str, Any]],
+    *,
+    source: str | None = None,
+) -> List[MatchedItemPayload]:
     payload: List[MatchedItemPayload] = []
     for it in items:
         vec_values = it.get("vec")
@@ -167,6 +171,7 @@ def _matched_payload(items: List[Dict[str, Any]]) -> List[MatchedItemPayload]:
                 text=str(it.get("text") or ""),
                 match_id=_as_int(it.get("match_id")),
                 score=_as_float(it.get("score")),
+                source=str(it.get("source") or source or "").strip() or None,
                 vector=vector,
             )
         )
@@ -427,7 +432,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     log.debug("[analyze/json] goods_enriched sample %r", goods_enriched[:3])
     log.debug("[analyze/json] equip_enriched sample %r", equip_enriched[:3])
 
-    goods_payload = _matched_payload(goods_enriched)
+    goods_payload = _matched_payload(goods_enriched, source=goods_origin)
     equip_payload = _matched_payload(equip_enriched)
 
     goods_preview = _ai_site_preview(

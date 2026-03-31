@@ -375,6 +375,7 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
     assert response.db_payload.llm_answer == "LLM ANSWER"
     assert response.parsed["LLM_ANSWER"] == "LLM ANSWER"
     assert response.db_payload.prodclass.id == 41
+    assert response.db_payload.goods_types[0].source == "GOODS_TYPE"
     assert response.db_payload.goods_types[0].vector.literal == "[0.2,0.4]"
     assert response.db_payload.equipment[0].vector.literal == "[0.2,0.4]"
     assert response.request_cost is not None
