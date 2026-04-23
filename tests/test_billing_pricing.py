@@ -162,6 +162,52 @@ async def test_billing_remaining_endpoint_returns_200_style_payload_without_admi
 
 
 @pytest.mark.anyio
+async def test_month_to_date_summary_returns_degraded_payload_on_provider_error(monkeypatch):
+    billing_service._WARNED_BILLING_REASONS.clear()
+    billing_service.clear_billing_summary_cache()
+    monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "sk-admin-test")
+    monkeypatch.setattr(billing_service.settings, "BILLING_SUMMARY_CACHE_TTL_SEC", 300)
+
+    calls = 0
+
+    async def fake_fetch_costs(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("403 Forbidden")
+
+    monkeypatch.setattr(billing_service, "fetch_costs", fake_fetch_costs)
+
+    first = await billing_service.month_to_date_summary(project_id="proj-403")
+    second = await billing_service.month_to_date_summary(project_id="proj-403")
+
+    assert calls == 1
+    assert first.configured is True
+    assert first.spent_usd is None
+    assert first.remaining_usd is None
+    assert first.error == "billing provider error: 403 Forbidden"
+    assert second.error == first.error
+
+
+@pytest.mark.anyio
+async def test_billing_remaining_endpoint_returns_200_style_payload_on_provider_error(monkeypatch):
+    billing_service._WARNED_BILLING_REASONS.clear()
+    billing_service.clear_billing_summary_cache()
+    monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "sk-admin-test")
+
+    async def fake_fetch_costs(**_kwargs):
+        raise RuntimeError("403 Forbidden")
+
+    monkeypatch.setattr(billing_service, "fetch_costs", fake_fetch_costs)
+
+    payload = await billing_router.billing_remaining(project_id=None)
+
+    assert payload.configured is True
+    assert payload.error == "billing provider error: 403 Forbidden"
+    assert payload.spend_month_to_date_usd is None
+    assert payload.remaining_usd is None
+
+
+@pytest.mark.anyio
 async def test_month_to_date_summary_uses_ttl_cache(monkeypatch):
     billing_service.clear_billing_summary_cache()
     monkeypatch.setattr(billing_service.settings, "OPENAI_ADMIN_KEY", "sk-admin-test")

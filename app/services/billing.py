@@ -107,6 +107,28 @@ def _extract_amount(result: Dict[str, Any]) -> tuple[float, str | None]:
     return parsed, currency
 
 
+def _build_degraded_summary(
+    *,
+    start_ts: int,
+    end_ts: int,
+    limit_usd: float | None,
+    prepaid: float | None,
+    configured: bool,
+    error: str,
+) -> BillingSummary:
+    return BillingSummary(
+        currency="usd",
+        period_start=start_ts,
+        period_end=end_ts,
+        spent_usd=None,
+        limit_usd=limit_usd,
+        prepaid_credits_usd=prepaid,
+        remaining_usd=None,
+        configured=configured,
+        error=error,
+    )
+
+
 async def fetch_costs(
     *,
     start_time: int,
@@ -161,14 +183,11 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
     if not (settings.OPENAI_ADMIN_KEY or "").strip():
         reason = "OPENAI_ADMIN_KEY not configured"
         _log_warning_once(reason)
-        return BillingSummary(
-            currency="usd",
-            period_start=start_ts,
-            period_end=end_ts,
-            spent_usd=None,
+        return _build_degraded_summary(
+            start_ts=start_ts,
+            end_ts=end_ts,
             limit_usd=limit_usd,
-            prepaid_credits_usd=prepaid,
-            remaining_usd=None,
+            prepaid=prepaid,
             configured=False,
             error=reason,
         )
@@ -180,8 +199,18 @@ async def month_to_date_summary(project_id: str | None = None) -> BillingSummary
     try:
         payload = await fetch_costs(start_time=start_ts, end_time=end_ts, project_id=project_id)
     except Exception as exc:
-        _log_warning_once(f"billing provider error: {exc}")
-        raise
+        error = f"billing provider error: {exc}"
+        _log_warning_once(error)
+        summary = _build_degraded_summary(
+            start_ts=start_ts,
+            end_ts=end_ts,
+            limit_usd=limit_usd,
+            prepaid=prepaid,
+            configured=True,
+            error=error,
+        )
+        _store_cached_summary(project_id, start_ts, summary)
+        return summary
 
     spent = 0.0
     currency = "usd"

@@ -200,6 +200,9 @@ python -m app.run
 
 Нужен `OPENAI_ADMIN_KEY`.
 
+Если Costs API недоступен, ключ не настроен или у ключа не хватает scopes, endpoint все равно
+возвращает совместимый payload с `configured` и `error`, а не роняет весь downstream-контур.
+
 ---
 
 ## Конфигурация (`.env`)
