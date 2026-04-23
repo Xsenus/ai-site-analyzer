@@ -1,0 +1,10 @@
+[Unit]
+Description=AI Site Analyzer healthcheck
+After=network-online.target ai-site-analyzer.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ai-site-analyzer
+EnvironmentFile=-/etc/default/ai-site-analyzer-monitoring
+ExecStart=/opt/ai-site-analyzer/.venv/bin/python -m app.jobs.system_healthcheck --json

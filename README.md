@@ -271,6 +271,14 @@ python -m app.run
 pytest -q
 ```
 
+Для CI/rollout-контура дополнительно доступен:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+python -m compileall app
+```
+
 В репозитории уже есть unit-тесты, в том числе на:
 
 - pricing/billing расчёты;
@@ -287,4 +295,57 @@ pytest -q
 - [docs/systemd-service.md](docs/systemd-service.md)
 
 Он рассчитан на запуск `python -m app.run` и управление параметрами через env.
+
+Для repeatable rollout и monitoring-режима добавлены helper-артефакты:
+
+- `deploy/ai-site-analyzer-rollout.sh` — последовательно обновляет dependencies,
+  гоняет `pytest`, `compileall`, перезапускает service/timer и делает live smoke.
+- `deploy/install-ai-site-analyzer-systemd-units.sh` — раскладывает monitoring unit-файлы
+  и env template в systemd-окружение.
+- `deploy/systemd/ai-site-analyzer-monitoring.env.example` — шаблон общего monitoring env-файла.
+
+Типовая последовательность для VPS:
+
+```bash
+bash deploy/install-ai-site-analyzer-systemd-units.sh
+bash deploy/ai-site-analyzer-rollout.sh
+```
+
+## Monitoring
+
+Standalone healthcheck:
+
+```bash
+python -m app.jobs.system_healthcheck --json
+```
+
+Он проверяет два слоя разом:
+
+- `GET /health` — базовая живость процесса;
+- `GET /v1/billing/remaining` — доступность billing-контура и quality payload.
+
+Возможные состояния healthcheck:
+
+- `ok` — service жив и billing возвращает полноценный payload;
+- `degraded` — service жив, но billing отвечает с `configured=false` или `error`;
+- `unhealthy` — сломан `/health` или недоступен `billing` endpoint.
+
+Текущий prod-кейс по billing может давать `degraded`, если у `OPENAI_ADMIN_KEY`
+нет scope `api.usage.read`. Это считается контролируемой деградацией, а не падением
+всего сервиса.
+
+Полезные переменные окружения:
+
+- `AI_SITE_ANALYZER_HEALTHCHECK_BASE_URL`
+- `AI_SITE_ANALYZER_HEALTHCHECK_HEALTH_URL`
+- `AI_SITE_ANALYZER_HEALTHCHECK_BILLING_URL`
+- `AI_SITE_ANALYZER_HEALTHCHECK_TIMEOUT`
+- `AI_SITE_ANALYZER_HEALTHCHECK_STATE_FILE`
+- `AI_SITE_ANALYZER_HEALTHCHECK_ARTIFACT_DIR`
+- `AI_SITE_ANALYZER_HEALTHCHECK_ALERT_WEBHOOK_URL`
+- `AI_SITE_ANALYZER_HEALTHCHECK_ALERT_ON_RECOVERY`
+
+Рабочий статус и список незакрытых infrastructure-хвостов ведётся в:
+
+- [docs/ai-irbistech-1.1-service-chain-plan.md](docs/ai-irbistech-1.1-service-chain-plan.md)
 

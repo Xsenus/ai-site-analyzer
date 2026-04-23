@@ -56,6 +56,7 @@ docker-data/
 # Swap/temporary
 .swp
 .swo
+artifacts/
 
 # Если в проекте есть вспомогательные node-скрипты
 node_modules/
