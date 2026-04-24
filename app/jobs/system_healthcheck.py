@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8123"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_STATE_FILE = "/var/lib/ai-site-analyzer/system-health-state.json"
 DEFAULT_ARTIFACT_DIR = "/var/lib/ai-site-analyzer/system-health"
+DEFAULT_ARTIFACT_RETENTION = 14
+ARTIFACT_FILE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T.*\.json$")
 
 
 @dataclass(slots=True)
@@ -118,7 +121,44 @@ def _summary_to_json(summary: ServiceHealthSummary) -> dict[str, Any]:
     }
 
 
-def _write_artifacts(artifact_dir: str | None, summary: ServiceHealthSummary) -> None:
+def _parse_artifact_retention_count(value: str | int | None, default: int = DEFAULT_ARTIFACT_RETENTION) -> int:
+    if value in {None, ""}:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return default if parsed < 0 else parsed
+
+
+def _prune_artifacts(artifact_dir: str | None, keep_latest: int) -> None:
+    if not artifact_dir or keep_latest <= 0:
+        return
+
+    target_dir = Path(artifact_dir)
+    if not target_dir.exists() or not target_dir.is_dir():
+        return
+
+    candidates: list[tuple[float, str, Path]] = []
+    for child in target_dir.iterdir():
+        if not child.is_file():
+            continue
+        if child.name == "latest.json":
+            continue
+        if not ARTIFACT_FILE_PATTERN.fullmatch(child.name):
+            continue
+        try:
+            mtime = child.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, child.name, child))
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    for _, _, child in candidates[keep_latest:]:
+        child.unlink(missing_ok=True)
+
+
+def _write_artifacts(artifact_dir: str | None, summary: ServiceHealthSummary, *, artifact_retention_count: int) -> None:
     if not artifact_dir:
         return
 
@@ -132,6 +172,7 @@ def _write_artifacts(artifact_dir: str | None, summary: ServiceHealthSummary) ->
 
     latest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     dated_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _prune_artifacts(artifact_dir, artifact_retention_count)
 
 
 def _current_state_label(summary: ServiceHealthSummary) -> str:
@@ -328,6 +369,7 @@ async def _run(
     webhook_url: str | None,
     state_file: str,
     artifact_dir: str | None,
+    artifact_retention_count: int,
     alert_on_recovery: bool,
 ) -> ServiceHealthSummary:
     health_probe, billing_probe = await asyncio.gather(
@@ -366,7 +408,7 @@ async def _run(
             "webhook_error": webhook_error,
         },
     )
-    _write_artifacts(artifact_dir, summary)
+    _write_artifacts(artifact_dir, summary, artifact_retention_count=artifact_retention_count)
 
     if webhook_error is not None and summary.ok:
         return ServiceHealthSummary(
@@ -422,6 +464,15 @@ def main() -> None:
         help="Optional directory for latest.json and timestamped artifacts",
     )
     parser.add_argument(
+        "--artifact-retention",
+        type=int,
+        default=_parse_artifact_retention_count(
+            os.getenv("AI_SITE_ANALYZER_HEALTHCHECK_ARTIFACT_RETENTION"),
+            DEFAULT_ARTIFACT_RETENTION,
+        ),
+        help="Keep the newest N timestamped artifacts in artifact-dir; 0 disables pruning",
+    )
+    parser.add_argument(
         "--webhook-url",
         default=os.getenv("AI_SITE_ANALYZER_HEALTHCHECK_ALERT_WEBHOOK_URL", ""),
         help="Optional webhook URL for degraded/unhealthy transitions",
@@ -452,6 +503,7 @@ def main() -> None:
             webhook_url=(args.webhook_url or "").strip() or None,
             state_file=args.state_file,
             artifact_dir=(args.artifact_dir or "").strip() or None,
+            artifact_retention_count=max(int(args.artifact_retention), 0),
             alert_on_recovery=bool(args.alert_on_recovery),
         )
     )

@@ -158,6 +158,7 @@ async def test_run_persists_state_and_artifacts_for_degraded_billing(tmp_path, m
         webhook_url=None,
         state_file=str(state_file),
         artifact_dir=str(artifact_dir),
+        artifact_retention_count=14,
         alert_on_recovery=True,
     )
 
@@ -210,9 +211,40 @@ async def test_run_marks_webhook_error_as_unhealthy_when_alert_delivery_fails(tm
         webhook_url="https://alerts.example.test/hook",
         state_file=str(state_file),
         artifact_dir=None,
+        artifact_retention_count=14,
         alert_on_recovery=True,
     )
 
     assert summary.ok is False
     assert summary.severity == "unhealthy"
     assert summary.reason.startswith("webhook_error:")
+
+
+def test_write_artifacts_prunes_old_timestamped_files(tmp_path) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "2026-04-22T00-00-00+00-00.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "2026-04-23T00-00-00+00-00.json").write_text("{}", encoding="utf-8")
+
+    summary = healthcheck_job.ServiceHealthSummary(
+        checked_at="2026-04-24T00:00:00+00:00",
+        base_url="http://127.0.0.1:8123",
+        health_url="http://127.0.0.1:8123/health",
+        billing_url="http://127.0.0.1:8123/v1/billing/remaining",
+        ok=True,
+        severity="ok",
+        reason="ok",
+        health_http_status=200,
+        billing_http_status=200,
+        billing_configured=True,
+        billing_error=None,
+        billing_currency="usd",
+        billing_spent_usd=1.0,
+        billing_remaining_usd=9.0,
+    )
+
+    healthcheck_job._write_artifacts(str(artifact_dir), summary, artifact_retention_count=1)
+
+    assert (artifact_dir / "latest.json").exists()
+    remaining = sorted(path.name for path in artifact_dir.glob("*.json") if path.name != "latest.json")
+    assert len(remaining) == 1
