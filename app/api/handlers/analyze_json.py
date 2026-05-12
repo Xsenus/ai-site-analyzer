@@ -24,12 +24,14 @@ from app.models.ib_prodclass import IB_PRODCLASS
 from app.services.analyzer import (
     MATCH_THRESHOLD_EQUIPMENT,
     MATCH_THRESHOLD_GOODS,
+    build_catalog_query_context,
     build_prompt,
     call_openai_with_usage,
     embed_single_text,
     enrich_by_catalog,
     get_embeddings_usage_total_tokens,
     parse_openai_answer,
+    refine_goods_type_items,
     start_embeddings_usage_tracking,
 )
 from app.services.billing import month_to_date_summary
@@ -391,6 +393,17 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     goods_source_list: List[str] = cast(List[str], parsed.get("GOODS_TYPE_LIST", []) or [])
     equip_source_list: List[str] = cast(List[str], parsed.get("EQUIPMENT_LIST", []) or [])
     goods_origin = str(parsed.get("GOODS_TYPE_SOURCE") or "GOODS_TYPE")
+    goods_source_list = refine_goods_type_items(
+        goods_source_list,
+        okved=body.okved or "",
+        description=description_text,
+        site_text=text_par,
+    )
+    query_context = build_catalog_query_context(
+        company_name=body.company_name or "",
+        okved=body.okved or "",
+        description=description_text,
+    )
 
     log.info(
         "[analyze/json] sources goods=%s equip=%s goods_origin=%s",
@@ -410,6 +423,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         goods_catalog,
         embed_model,
         MATCH_THRESHOLD_GOODS,
+        query_context=query_context,
     )
     timings["goods_enrich_ms"] = _tick(t_enrich_goods)
 
@@ -419,6 +433,7 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
         equip_catalog,
         embed_model,
         MATCH_THRESHOLD_EQUIPMENT,
+        query_context=query_context,
     )
     timings["equipment_enrich_ms"] = _tick(t_enrich_equip)
 

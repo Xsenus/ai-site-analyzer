@@ -228,6 +228,43 @@ async def test_parse_openai_answer_filters_empty_equipment(monkeypatch):
     assert parsed["EQUIPMENT_LIST"] == []
 
 
+@pytest.mark.anyio
+async def test_parse_openai_answer_filters_non_production_equipment(monkeypatch):
+    async def fake_embeddings(texts, embed_model):  # pragma: no cover - simple stub
+        return [[1.0, 0.0, 0.0] for _ in texts], 0
+
+    monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+
+    answer = (
+        "[DESCRIPTION]=[Описание]\n"
+        "[PRODCLASS]=[41]\n"
+        "[PRODCLASS_SCORE]=[0.75]\n"
+        "[EQUIPMENT_SITE]=[Цифровая платформа ММК; Центры компетенций; Нагревательная печь для слябов]\n"
+        "[GOODS]=[Прокат]\n"
+        "[GOODS_TYPE]=[Прокат плоский горячекатаный из нелегированной стали]\n"
+    )
+
+    parsed = await analyzer.parse_openai_answer(answer, "текст", "embed-model")
+
+    assert parsed["EQUIPMENT_LIST"] == ["Нагревательная печь для слябов"]
+
+
+def test_refine_goods_type_items_expands_generic_steel_goods():
+    refined = analyzer.refine_goods_type_items(
+        ["Сталь", "Прокат", "Заготовки"],
+        okved="24.10",
+        description="Производитель черной металлургии",
+    )
+
+    assert refined[:5] == [
+        "Прокат плоский горячекатаный шириной 600 мм и более из нелегированной стали",
+        "Прокат плоский холоднокатаный шириной 600 мм и более из нелегированной стали",
+        "Прокат плоский из железа или нелегированной стали, плакированный или покрытый",
+        "Полуфабрикаты из железа или нелегированной стали (включая слябы)",
+        "Прокат фасонный из железа или нелегированной стали",
+    ]
+
+
 def test_ai_site_preview_formatting():
     enriched_items = [
         {
@@ -326,7 +363,7 @@ async def test_analyze_from_json_keeps_llm_answer_in_db_payload(monkeypatch):
         return [0.1, 0.2], 25
 
     async def fake_enrich(
-        items: list[str], catalog: list[dict], embed_model: str, threshold: float
+        items: list[str], catalog: list[dict], embed_model: str, threshold: float, **_kwargs
     ) -> list[dict]:
         return [
             {
@@ -431,7 +468,7 @@ async def test_analyze_json_request_cost_includes_embeddings(monkeypatch):
     async def fake_embed_single_text(_text: str, _embed_model: str):
         return [0.1, 0.2], 500
 
-    async def fake_enrich(items: list[str], catalog: list[dict], embed_model: str, threshold: float) -> list[dict]:
+    async def fake_enrich(items: list[str], catalog: list[dict], embed_model: str, threshold: float, **_kwargs) -> list[dict]:
         return []
 
     async def fake_month_to_date_summary():

@@ -75,3 +75,35 @@ async def test_enrich_by_catalog_uses_cache_for_catalog_embeddings(monkeypatch):
 
     # Вызовы: [items], [catalog], [items]; без второго прохода по каталогу
     assert embed_calls == [["query"], ["Reusable"], ["query"]]
+
+
+@pytest.mark.anyio
+async def test_enrich_by_catalog_uses_context_for_query_only(monkeypatch):
+    analyzer._CATALOG_VECTOR_CACHE.clear()
+
+    calls: list[list[str]] = []
+
+    async def fake_embeddings(texts: list[str], embed_model: str) -> list[list[float]]:
+        calls.append(list(texts))
+        if texts == ["Заготовки\nКонтекст компании: ОКВЭД: 24.10 | Описание: металлургия"]:
+            return [[1.0, 0.0]], 0
+        if texts == ["Полуфабрикаты из железа или нелегированной стали"]:
+            return [[1.0, 0.0]], 0
+        raise AssertionError(f"unexpected texts {texts}")
+
+    monkeypatch.setattr(analyzer, "_embeddings", fake_embeddings)
+
+    result = await analyzer.enrich_by_catalog(
+        ["Заготовки"],
+        [{"id": 560, "name": "Полуфабрикаты из железа или нелегированной стали", "vec": None}],
+        embed_model="fake",
+        min_threshold=0.0,
+        query_context="ОКВЭД: 24.10 | Описание: металлургия",
+    )
+
+    assert result[0]["text"] == "Заготовки"
+    assert result[0]["match_id"] == 560
+    assert calls == [
+        ["Заготовки\nКонтекст компании: ОКВЭД: 24.10 | Описание: металлургия"],
+        ["Полуфабрикаты из железа или нелегированной стали"],
+    ]
