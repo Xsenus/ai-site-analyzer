@@ -927,7 +927,20 @@ async def enrich_by_catalog(
 
     # векторы для items (их немного — оставляем в памяти до конца, т.к. они нужны в ответе)
     item_embed_inputs = [_catalog_query_text(item, query_context) for item in items]
-    item_vecs, _ = await embed_texts(item_embed_inputs, embed_model)
+    try:
+        item_vecs, _ = await embed_texts(item_embed_inputs, embed_model)
+    except Exception:
+        if any(result is not None for result in exact_results):
+            fallback: List[Dict[str, Any]] = []
+            for item, exact_result in zip(items, exact_results):
+                if exact_result is not None:
+                    fallback.append(exact_result)
+                else:
+                    fallback.append(
+                        {"text": item, "match_id": None, "score": None, "vec": None, "vec_str": None}
+                    )
+            return fallback
+        raise
 
     best_match_idx: List[int] = [-1] * len(items)
     best_match_cos: List[float] = [-1.0] * len(items)

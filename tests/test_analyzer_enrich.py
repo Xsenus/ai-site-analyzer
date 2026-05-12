@@ -47,6 +47,33 @@ async def test_enrich_by_catalog_uses_exact_names_without_embeddings(monkeypatch
 
 
 @pytest.mark.anyio
+async def test_enrich_by_catalog_keeps_exact_matches_when_embeddings_fail(monkeypatch):
+    analyzer._CATALOG_VECTOR_CACHE.clear()
+
+    async def fail_embeddings(*_args, **_kwargs):  # pragma: no cover - provider failure
+        raise RuntimeError("embedding provider is unavailable")
+
+    monkeypatch.setattr(analyzer, "_embeddings", fail_embeddings)
+
+    result = await analyzer.enrich_by_catalog(
+        ["Нагревательная печь для слябов", "Неизвестная строка"],
+        [{"id": 2047, "name": "Нагревательная печь для слябов", "vec": None}],
+        embed_model="fake-model",
+        min_threshold=0.2,
+    )
+
+    assert result[0]["match_id"] == 2047
+    assert result[0]["score"] == 1.0
+    assert result[1] == {
+        "text": "Неизвестная строка",
+        "match_id": None,
+        "score": None,
+        "vec": None,
+        "vec_str": None,
+    }
+
+
+@pytest.mark.anyio
 async def test_enrich_by_catalog_prefers_existing_vectors(monkeypatch):
     analyzer._CATALOG_VECTOR_CACHE.clear()
 
