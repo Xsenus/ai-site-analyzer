@@ -212,7 +212,7 @@ python -m app.run
 ### OpenAI и модели
 
 - `OPENAI_API_KEY` — ключ вызовов chat/embeddings.
-- `CHAT_MODEL` — модель чата (по умолчанию `gpt-4o`).
+- `CHAT_MODEL` — модель чата (по умолчанию `gpt-4o`; можно указать доступную API-модель, например `gpt-5.4` или `gpt-5.5`).
 - `OPENAI_EMBED_MODEL` (алиас: `EMBED_MODEL`) — embedding-модель.
 - `VECTOR_DIM` — ожидаемая размерность вектора.
 

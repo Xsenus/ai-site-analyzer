@@ -24,9 +24,46 @@ def test_calculate_response_cost_usd_gpt_5_mini_with_cached_tokens():
     assert cost == pytest.approx(expected)
 
 
+def test_calculate_response_cost_usd_gpt_5_5_with_cached_tokens():
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 250,
+        "input_tokens_details": {"cached_tokens": 200},
+    }
+
+    cost = calculate_response_cost_usd("gpt-5.5", usage)
+
+    expected = 800 * (5.00 / 1_000_000) + 200 * (0.50 / 1_000_000) + 250 * (30.00 / 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert cost > 0
+
+
+def test_calculate_response_cost_usd_gpt_5_4_versioned_with_cached_tokens():
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 250,
+        "input_tokens_details": {"cached_tokens": 200},
+    }
+
+    cost = calculate_response_cost_usd("gpt-5.4-2026-05-01", usage)
+
+    expected = 800 * (2.50 / 1_000_000) + 200 * (0.25 / 1_000_000) + 250 * (15.00 / 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert cost > 0
+
+
+def test_calculate_response_cost_usd_gpt_5_5_pro_non_zero():
+    usage = {"input_tokens": 1000, "output_tokens": 250, "input_tokens_details": {"cached_tokens": 200}}
+
+    cost = calculate_response_cost_usd("gpt-5.5-pro", usage)
+
+    expected = 800 * (30.00 / 1_000_000) + 250 * (180.00 / 1_000_000)
+    assert cost == pytest.approx(expected)
+    assert cost > 0
+
+
 def test_calculate_response_cost_usd_unknown_model_returns_zero():
     assert calculate_response_cost_usd("unknown-model", {"input_tokens": 1, "output_tokens": 1}) == 0.0
-
 
 
 def test_calculate_response_cost_usd_gpt_4o_non_zero():
