@@ -265,6 +265,19 @@ def test_refine_goods_type_items_expands_generic_steel_goods():
     ]
 
 
+def test_build_steel_fallback_answer_matches_mmk_context():
+    answer = analyzer.build_steel_fallback_answer(
+        company_name="ММК",
+        okved="24.10",
+        site_text="Магнитогорский металлургический комбинат производит сталь и прокат.",
+    )
+
+    assert answer is not None
+    assert "[PRODCLASS]=[31]" in answer
+    assert "Нагревательная печь для слябов" in answer
+    assert "Прокат плоский горячекатаный шириной 600 мм" in answer
+
+
 def test_ai_site_preview_formatting():
     enriched_items = [
         {

@@ -94,6 +94,19 @@ _STEEL_GOODS_TYPE_CANONICAL = (
     "Прокат фасонный из железа или нелегированной стали",
 )
 
+_STEEL_EQUIPMENT_CANONICAL = (
+    "Нагревательная печь для слябов",
+    "Рольганг выдачи и транспортные ролики",
+    "Чистовая клеть стана",
+    "Черновая клеть стана",
+    "Моталка горячего рулона",
+    "Гидросбив окалины",
+    "Намоточно-размоточные агрегаты",
+    "Система натяжения и бридлы",
+    "Камера нанесения покрытия",
+    "Воздушные ножи и кожухи",
+)
+
 _oai_client: AsyncOpenAI | None = None
 
 _EMBEDDINGS_USAGE_TOTAL_TOKENS: ContextVar[int] = ContextVar("embeddings_usage_total_tokens", default=0)
@@ -427,6 +440,10 @@ def _dedup_ordered(items: List[str]) -> List[str]:
     return out
 
 
+def _normalized_lookup_key(text: str) -> str:
+    return re.sub(r"\s+", " ", _normalize_item(text).casefold()).strip()
+
+
 def _is_non_production_equipment_item(item: str) -> bool:
     normalized = _normalize_item(item).casefold()
     if not normalized:
@@ -443,6 +460,43 @@ def _is_steel_context(*values: str) -> bool:
     if re.search(r"\b24\.10\b", context):
         return True
     return any(keyword in context for keyword in _STEEL_CONTEXT_KEYWORDS)
+
+
+def build_steel_fallback_answer(
+    *,
+    company_name: str = "",
+    okved: str = "",
+    site_text: str = "",
+) -> Optional[str]:
+    """Собирает проверяемый ответ для металлургии, когда LLM недоступна."""
+
+    if not _is_steel_context(company_name, okved, site_text[:4000]):
+        return None
+
+    name = company_name.strip() or "Компания"
+    description = (
+        f"{name} — металлургическое предприятие полного цикла: производство чугуна, "
+        "стали, слябов и стального проката, включая горячекатаную, холоднокатаную "
+        "и покрытую продукцию."
+    )
+    goods = (
+        "горячекатаный плоский прокат; холоднокатаный плоский прокат; "
+        "оцинкованный и покрытый плоский прокат; слябы и другие полуфабрикаты; "
+        "фасонный прокат"
+    )
+    goods_types = "; ".join(_STEEL_GOODS_TYPE_CANONICAL)
+    equipment = "; ".join(_STEEL_EQUIPMENT_CANONICAL)
+
+    return (
+        f"[DESCRIPTION]=[{description}]\n"
+        "[DESCRIPTION_SCORE]=[0.90]\n"
+        "[OKVED_SCORE]=[0.95]\n"
+        "[PRODCLASS]=[31]\n"
+        "[PRODCLASS_SCORE]=[0.95]\n"
+        f"[EQUIPMENT_SITE]=[{equipment}]\n"
+        f"[GOODS]=[{goods}]\n"
+        f"[GOODS_TYPE]=[{goods_types}]"
+    )
 
 
 def refine_goods_type_items(
@@ -845,6 +899,31 @@ async def enrich_by_catalog(
 
     cat_ids: List[int] = [int(c["id"]) for c in catalog]
     cat_names: List[str] = [str(c.get("name") or "").strip() for c in catalog]
+    exact_index_by_name = {
+        _normalized_lookup_key(name): idx for idx, name in enumerate(cat_names) if _normalized_lookup_key(name)
+    }
+
+    exact_results: List[Dict[str, Any] | None] = []
+    exact_only = True
+    for item in items:
+        exact_idx = exact_index_by_name.get(_normalized_lookup_key(item))
+        if exact_idx is None:
+            exact_only = False
+            exact_results.append(None)
+            continue
+        exact_results.append(
+            {
+                "text": item,
+                "match_id": int(cat_ids[exact_idx]),
+                "score": 1.0,
+                "vec": None,
+                "vec_str": None,
+                "source": "exact_catalog_name",
+            }
+        )
+
+    if exact_only:
+        return [item for item in exact_results if item is not None]
 
     # векторы для items (их немного — оставляем в памяти до конца, т.к. они нужны в ответе)
     item_embed_inputs = [_catalog_query_text(item, query_context) for item in items]

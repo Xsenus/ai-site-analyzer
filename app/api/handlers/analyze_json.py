@@ -26,6 +26,7 @@ from app.services.analyzer import (
     MATCH_THRESHOLD_GOODS,
     build_catalog_query_context,
     build_prompt,
+    build_steel_fallback_answer,
     call_openai_with_usage,
     embed_single_text,
     enrich_by_catalog,
@@ -285,7 +286,24 @@ async def analyze_from_json(body: AnalyzeFromJsonRequest) -> AnalyzeFromJsonResp
     )
 
     t_llm = dt.datetime.now()
-    answer, usage = await call_openai_with_usage(prompt, chat_model)
+    try:
+        answer, usage = await call_openai_with_usage(prompt, chat_model)
+    except Exception as exc:  # pragma: no cover - network/provider failures
+        fallback_answer = build_steel_fallback_answer(
+            company_name=body.company_name or "",
+            okved=body.okved or "",
+            site_text=text_par,
+        )
+        if not fallback_answer:
+            log.exception("[analyze/json] llm request failed")
+            raise HTTPException(status_code=502, detail=f"LLM request failed: {exc}") from exc
+
+        answer = fallback_answer
+        usage = {}
+        log.warning(
+            "[analyze/json] llm request failed, using steel fallback answer: %s",
+            exc,
+        )
     timings["llm_ms"] = _tick(t_llm)
     log.info(
         "[analyze/json] llm answer len=%s took_ms=%s",

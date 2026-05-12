@@ -19,6 +19,34 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
+async def test_enrich_by_catalog_uses_exact_names_without_embeddings(monkeypatch):
+    analyzer._CATALOG_VECTOR_CACHE.clear()
+
+    async def fail_embeddings(*_args, **_kwargs):  # pragma: no cover - sanity guard
+        raise AssertionError("exact catalog matches should not call embeddings")
+
+    monkeypatch.setattr(analyzer, "_embeddings", fail_embeddings)
+
+    result = await analyzer.enrich_by_catalog(
+        ["Нагревательная печь для слябов"],
+        [{"id": 2047, "name": "Нагревательная печь для слябов", "vec": None}],
+        embed_model="fake-model",
+        min_threshold=0.2,
+    )
+
+    assert result == [
+        {
+            "text": "Нагревательная печь для слябов",
+            "match_id": 2047,
+            "score": 1.0,
+            "vec": None,
+            "vec_str": None,
+            "source": "exact_catalog_name",
+        }
+    ]
+
+
+@pytest.mark.anyio
 async def test_enrich_by_catalog_prefers_existing_vectors(monkeypatch):
     analyzer._CATALOG_VECTOR_CACHE.clear()
 
